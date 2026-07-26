@@ -5,6 +5,7 @@ repository="Brobicho/codex-operations-center"
 version="${CODEX_OPS_VERSION:-latest}"
 install_root="${CODEX_OPS_HOME:-${HOME}/.local/share/codex-ops}"
 bin_dir="${CODEX_OPS_BIN_DIR:-${HOME}/.local/bin}"
+existing_launcher="$(command -v codex-ops 2>/dev/null || true)"
 
 case "$(uname -s)" in
   Linux) os="unknown-linux-gnu" ;;
@@ -65,6 +66,24 @@ tar -xzf "${temporary}/${archive}" -C "$temporary"
 mkdir -p "$install_root" "$bin_dir"
 install -m 0755 "${temporary}/codex-ops" "${install_root}/codex-ops"
 ln -sfn "${install_root}/codex-ops" "${bin_dir}/codex-ops"
+launcher_paths="${bin_dir}/codex-ops"
+
+# A previous `cargo install` commonly leaves ~/.cargo/bin/codex-ops ahead of
+# ~/.local/bin in PATH. Replace only a user-owned executable that identifies
+# itself as this project; never touch an unrelated or system-wide command.
+if [ -n "$existing_launcher" ] && [ "$existing_launcher" != "${bin_dir}/codex-ops" ]; then
+  existing_version="$("$existing_launcher" --version 2>/dev/null || true)"
+  case "$existing_launcher:$existing_version" in
+    "$HOME"/*:codex-ops\ *)
+      ln -sfn "${install_root}/codex-ops" "$existing_launcher"
+      launcher_paths="${launcher_paths}:${existing_launcher}"
+      printf 'Updated shadowing launcher: %s\n' "$existing_launcher"
+      ;;
+    *)
+      printf 'Warning: %s shadows the installed launcher and was left unchanged.\n' "$existing_launcher" >&2
+      ;;
+  esac
+fi
 
 if [ "$os" = "unknown-linux-gnu" ] && [ "${CODEX_OPS_SKIP_HD_TERMINAL:-0}" != "1" ]; then
   kitty_root="${install_root}/kitty.app"
@@ -81,7 +100,7 @@ if [ "$os" = "unknown-linux-gnu" ] && [ "${CODEX_OPS_SKIP_HD_TERMINAL:-0}" != "1
 fi
 
 if [ "${CODEX_OPS_SKIP_INTEGRATION:-0}" != "1" ]; then
-  "${install_root}/codex-ops" integrate
+  CODEX_OPS_LAUNCHER_PATHS="$launcher_paths" "${install_root}/codex-ops" integrate
 fi
 
 printf '\n%s\n' "Codex Operations Center installed successfully."
