@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.7 - 2026-07-26
+
+- Group conversations by Git repository or directory and order both projects and conversations by latest activity.
+- Expand the scene to six project rooms plus a dedicated infrastructure room, with up to three visible agents per project.
+- Make active agents glow and pulse while resting agents are dimmed, desaturated, and marked at rest.
+- Open a factual agent inspector on click with current action, declared reasoning effort, model, activity start time, context load, action count, and timing metrics.
+- Reduce always-visible dashboard text and move detailed information behind contextual inspectors.
+
 ## 0.1.6 - 2026-07-26
 
 - Keep operators, infrastructure, and labels at a stable visual scale during preview frames.

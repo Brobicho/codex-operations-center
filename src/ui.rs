@@ -1,16 +1,14 @@
-use std::collections::BTreeSet;
-
 use chrono::Local;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 use crate::app::Dashboard;
 use crate::capabilities::RenderingProfile;
 use crate::codex::{ThreadStatus, ThreadSummary};
-use crate::scene::{Scene, UnicodeScene, project_name};
+use crate::scene::{Scene, UnicodeScene, project_key, project_name};
 
 const BG: Color = Color::Rgb(3, 8, 22);
 const PANEL: Color = Color::Rgb(7, 18, 39);
@@ -37,7 +35,7 @@ pub fn draw(frame: &mut Frame<'_>, dashboard: &mut Dashboard) {
     }
 
     let vertical = Layout::vertical([
-        Constraint::Length(4),
+        Constraint::Length(3),
         Constraint::Min(12),
         Constraint::Length(3),
     ])
@@ -45,20 +43,18 @@ pub fn draw(frame: &mut Frame<'_>, dashboard: &mut Dashboard) {
     draw_header(frame, dashboard, vertical[0]);
     if area.width >= 132 {
         let body = Layout::horizontal([
-            Constraint::Percentage(21),
-            Constraint::Percentage(57),
-            Constraint::Percentage(22),
+            Constraint::Percentage(23),
+            Constraint::Percentage(59),
+            Constraint::Percentage(18),
         ])
         .split(vertical[1]);
-        let left = Layout::vertical([Constraint::Length(13), Constraint::Min(10)]).split(body[0]);
-        draw_projects(frame, dashboard, left[0]);
-        draw_threads(frame, dashboard, left[1]);
+        draw_threads(frame, dashboard, body[0]);
         draw_scene(frame, dashboard, body[1]);
-        let right = if dashboard.selected_event.is_some() {
-            Layout::vertical([Constraint::Percentage(62), Constraint::Percentage(38)])
+        let right = if dashboard.selected_event.is_some() || dashboard.agent_detail_open {
+            Layout::vertical([Constraint::Percentage(64), Constraint::Percentage(36)])
                 .split(body[2])
         } else {
-            Layout::vertical([Constraint::Length(18), Constraint::Min(8)]).split(body[2])
+            Layout::vertical([Constraint::Length(7), Constraint::Min(8)]).split(body[2])
         };
         draw_inspector(frame, dashboard, right[0]);
         draw_events(frame, dashboard, right[1]);
@@ -76,12 +72,7 @@ pub fn draw(frame: &mut Frame<'_>, dashboard: &mut Dashboard) {
 
 fn draw_header(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
     let threads = dashboard.effective_threads();
-    let project_count = dashboard
-        .threads
-        .iter()
-        .map(|thread| &thread.cwd)
-        .collect::<BTreeSet<_>>()
-        .len();
+    let project_count = project_groups(&threads).len();
     let active = threads
         .iter()
         .filter(|thread| {
@@ -90,10 +81,6 @@ fn draw_header(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
                 ThreadStatus::Active { .. } | ThreadStatus::ObservedRunning
             )
         })
-        .count();
-    let open = threads
-        .iter()
-        .filter(|thread| matches!(thread.status, ThreadStatus::ObservedOpen))
         .count();
     let attention = threads
         .iter()
@@ -104,35 +91,26 @@ fn draw_header(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
             )
         })
         .count();
-    let mode = match dashboard.profile {
-        RenderingProfile::Ultra => "ULTRA 3D",
-        RenderingProfile::Unicode => "UNICODE 3D",
-        RenderingProfile::Safe => "SAFE",
-    };
-    let lines = vec![
-        Line::from(vec![
-            Span::styled(" CODEX ", Style::new().fg(BG).bg(CYAN).bold()),
-            Span::styled(" OPERATIONS CENTER", Style::new().fg(Color::White).bold()),
-            Span::raw("  "),
-            Span::styled(mode, Style::new().fg(CYAN)),
-        ]),
-        Line::from(vec![
-            Span::styled(format!(" {active} EN COURS "), Style::new().fg(CYAN)),
-            Span::styled(format!("  {open} OUVERTE(S) "), Style::new().fg(BLUE)),
-            Span::styled(
-                format!("  {attention} INTERVENTION(S) "),
-                Style::new().fg(if attention > 0 { AMBER } else { MUTED }),
-            ),
-            Span::styled(
-                format!("  {project_count} PROJETS  "),
-                Style::new().fg(MUTED),
-            ),
-            Span::styled(
-                Local::now().format("%A %d %B · %H:%M:%S").to_string(),
-                Style::new().fg(MUTED),
-            ),
-        ]),
-    ];
+    let lines = vec![Line::from(vec![
+        Span::styled(" CODEX ", Style::new().fg(BG).bg(CYAN).bold()),
+        Span::styled(" OPERATIONS HUB", Style::new().fg(Color::White).bold()),
+        Span::styled(
+            format!("   ● {active} actifs"),
+            Style::new().fg(GREEN).bold(),
+        ),
+        Span::styled(
+            format!("   ◆ {project_count} projets"),
+            Style::new().fg(BLUE),
+        ),
+        Span::styled(
+            format!("   ! {attention}"),
+            Style::new().fg(if attention > 0 { AMBER } else { MUTED }),
+        ),
+        Span::styled(
+            format!("   {}", Local::now().format("%H:%M:%S")),
+            Style::new().fg(MUTED),
+        ),
+    ])];
     frame.render_widget(
         Paragraph::new(lines)
             .block(
@@ -189,51 +167,6 @@ fn draw_scene(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
     }
 }
 
-fn draw_projects(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
-    let block = panel("ESPACES");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let threads = dashboard.effective_threads();
-    let mut projects = std::collections::BTreeMap::<String, (usize, usize)>::new();
-    for thread in &threads {
-        let entry = projects.entry(project_name(&thread.cwd)).or_default();
-        entry.0 += 1;
-        if matches!(
-            thread.status,
-            ThreadStatus::Active { .. } | ThreadStatus::ObservedRunning
-        ) {
-            entry.1 += 1;
-        }
-    }
-    let mut lines = vec![Line::from(vec![
-        Span::styled(" ● ", Style::new().fg(CYAN)),
-        Span::styled("TOUT LE COMPLEXE", Style::new().fg(Color::White).bold()),
-        Span::styled(format!("  {}", threads.len()), Style::new().fg(MUTED)),
-    ])];
-    for (index, (project, (count, active))) in projects.into_iter().take(4).enumerate() {
-        let color = [
-            CYAN,
-            Color::Rgb(153, 104, 255),
-            AMBER,
-            Color::Rgb(75, 226, 164),
-        ][index % 4];
-        lines.push(Line::default());
-        lines.push(Line::from(vec![
-            Span::styled(" ◆ ", Style::new().fg(color)),
-            Span::styled(
-                truncate(&project, inner.width.saturating_sub(9) as usize),
-                Style::new().fg(Color::White),
-            ),
-            Span::styled(format!(" {count}"), Style::new().fg(MUTED)),
-        ]));
-        lines.push(Line::from(Span::styled(
-            format!("     {active} en activité"),
-            Style::new().fg(if active > 0 { color } else { MUTED }),
-        )));
-    }
-    frame.render_widget(Paragraph::new(lines).style(Style::new().bg(PANEL)), inner);
-}
-
 fn draw_inspector(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
     if let Some(index) = dashboard.selected_event
         && let Some(event) = dashboard.events.get(index)
@@ -241,7 +174,11 @@ fn draw_inspector(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
         draw_activity_detail(frame, event, area);
         return;
     }
-    let block = panel("SESSION ACTIVE");
+    let block = panel(if dashboard.agent_detail_open {
+        "FICHE AGENT"
+    } else {
+        "FOCUS"
+    });
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let threads = dashboard.effective_threads();
@@ -260,6 +197,37 @@ fn draw_inspector(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
         .or(thread.name.as_deref())
         .filter(|value| !value.is_empty())
         .unwrap_or("Agent Codex");
+    if !dashboard.agent_detail_open {
+        let content = vec![
+            Line::from(vec![
+                Span::styled(" ◆ ", Style::new().fg(status_color(thread))),
+                Span::styled(
+                    truncate(name, inner.width.saturating_sub(5) as usize),
+                    Style::new().fg(Color::White).bold(),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    status_short(thread),
+                    Style::new().fg(status_color(thread)).bold(),
+                ),
+                Span::styled("  ·  ", Style::new().fg(MUTED)),
+                Span::styled(project_name(&thread.cwd), Style::new().fg(CYAN)),
+            ]),
+            Line::default(),
+            Line::from(Span::styled(
+                "Cliquez sur l’agent pour ouvrir ses métriques.",
+                Style::new().fg(MUTED),
+            )),
+        ];
+        frame.render_widget(
+            Paragraph::new(content)
+                .style(Style::new().bg(PANEL))
+                .wrap(Wrap { trim: true }),
+            inner,
+        );
+        return;
+    }
     let updated = chrono::DateTime::from_timestamp(thread.updated_at, 0)
         .map(|date| {
             date.with_timezone(&Local)
@@ -267,28 +235,107 @@ fn draw_inspector(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
                 .to_string()
         })
         .unwrap_or_else(|| "inconnue".to_owned());
-    let content = vec![
+    let started = thread.runtime.activity_started_at.and_then(|timestamp| {
+        chrono::DateTime::from_timestamp(timestamp, 0).map(|date| {
+            let local = date.with_timezone(&Local);
+            let elapsed = Local::now().signed_duration_since(local);
+            format!(
+                "{} · depuis {}",
+                local.format("%H:%M:%S"),
+                format_duration(elapsed.num_milliseconds().max(0) as u64)
+            )
+        })
+    });
+    let current_action = thread
+        .runtime
+        .last_action
+        .clone()
+        .or_else(|| {
+            dashboard
+                .events
+                .iter()
+                .rev()
+                .find(|event| {
+                    event.session_id == thread.session_id || event.session_id == thread.id
+                })
+                .map(|event| event.summary.clone())
+        })
+        .unwrap_or_else(|| "En attente d’une nouvelle tâche".to_owned());
+    let model = thread
+        .runtime
+        .model
+        .as_deref()
+        .unwrap_or(&thread.model_provider);
+    let reasoning = thread
+        .runtime
+        .reasoning_effort
+        .as_deref()
+        .unwrap_or("non exposé");
+    let context = match (thread.runtime.context_tokens, thread.runtime.context_window) {
+        (Some(used), Some(window)) if window > 0 => {
+            format!(
+                "{} / {} · {:.0}%",
+                compact_number(used),
+                compact_number(window),
+                used as f64 / window as f64 * 100.0
+            )
+        }
+        _ => "non exposé".to_owned(),
+    };
+    let mut content = vec![
         Line::from(vec![
             Span::styled(" ◆ ", Style::new().fg(status_color(thread))),
             Span::styled(name, Style::new().fg(Color::White).bold()),
         ]),
         Line::from(Span::styled(
-            status(thread),
+            status_short(thread),
             Style::new().fg(status_color(thread)).bold(),
         )),
         Line::default(),
+        section_colored("ACTION EN COURS", GREEN),
+        Line::from(Span::styled(
+            truncate(&current_action, inner.width as usize * 3),
+            Style::new().fg(Color::White),
+        )),
+        section_colored("DÉBUT D’ACTIVITÉ", AMBER),
+        Line::from(Span::styled(
+            started.unwrap_or_else(|| "Au repos".to_owned()),
+            Style::new().fg(AMBER),
+        )),
+        section_colored("RAISONNEMENT CODEX", VIOLET),
+        Line::from(vec![
+            Span::styled(reasoning.to_uppercase(), Style::new().fg(VIOLET).bold()),
+            Span::styled("  (valeur déclarée)", Style::new().fg(MUTED)),
+        ]),
+        section_colored("MÉTRIQUES", CYAN),
+        Line::from(vec![
+            Span::styled("Contexte  ", Style::new().fg(MUTED)),
+            Span::styled(context, Style::new().fg(CYAN)),
+        ]),
+        Line::from(vec![
+            Span::styled("Actions   ", Style::new().fg(MUTED)),
+            Span::styled(
+                thread.runtime.actions_this_turn.to_string(),
+                Style::new().fg(GREEN),
+            ),
+            Span::styled("  ·  raisonnement ", Style::new().fg(MUTED)),
+            Span::styled(
+                thread
+                    .runtime
+                    .reasoning_tokens
+                    .map(compact_number)
+                    .unwrap_or_else(|| "—".to_owned()),
+                Style::new().fg(VIOLET),
+            ),
+            Span::styled(" tok.", Style::new().fg(MUTED)),
+        ]),
         section("PROJET"),
         Line::from(Span::styled(
             project_name(&thread.cwd),
             Style::new().fg(CYAN),
         )),
-        section("CONTEXTE ACTUEL"),
-        Line::from(Span::styled(
-            truncate(&thread.preview, inner.width as usize * 2),
-            Style::new().fg(Color::White),
-        )),
         section("MOTEUR"),
-        Line::from(Span::styled(&thread.model_provider, Style::new().fg(MUTED))),
+        Line::from(Span::styled(model, Style::new().fg(BLUE))),
         section("DERNIÈRE ACTIVITÉ"),
         Line::from(Span::styled(updated, Style::new().fg(MUTED))),
         section("DOSSIER"),
@@ -297,6 +344,20 @@ fn draw_inspector(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
             Style::new().fg(Color::Rgb(104, 144, 194)),
         )),
     ];
+    if let Some(duration) = thread.runtime.last_turn_duration_ms {
+        content.push(section("DERNIER TOUR"));
+        content.push(Line::from(vec![
+            Span::styled(format_duration(duration), Style::new().fg(GREEN)),
+            Span::styled(
+                thread
+                    .runtime
+                    .time_to_first_token_ms
+                    .map(|value| format!("  ·  1er token {}", format_duration(value)))
+                    .unwrap_or_default(),
+                Style::new().fg(MUTED),
+            ),
+        ]));
+    }
     frame.render_widget(
         Paragraph::new(content)
             .style(Style::new().bg(PANEL))
@@ -378,52 +439,89 @@ fn section_colored(label: &'static str, color: Color) -> Line<'static> {
 }
 
 fn draw_threads(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
-    let inner = panel("SESSIONS").inner(area);
+    let block = panel("PROJETS · CONVERSATIONS");
+    let inner = block.inner(area);
     dashboard.thread_area = inner;
-    frame.render_widget(panel("SESSIONS"), area);
+    dashboard.thread_hitboxes.clear();
+    frame.render_widget(block, area);
     let threads = dashboard.effective_threads();
-    let capacity = inner.height as usize / 3;
-    let start = thread_list_start(dashboard, capacity);
-    let items = threads
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(capacity)
-        .map(|(index, thread)| {
+    let groups = project_groups(&threads);
+    let mut lines = Vec::new();
+    for (project_index, group) in groups.iter().enumerate() {
+        if lines.len() >= inner.height as usize {
+            break;
+        }
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        let color = project_color(project_index);
+        let active = group
+            .threads
+            .iter()
+            .filter(|&&index| is_active(&threads[index]))
+            .count();
+        lines.push(Line::from(vec![
+            Span::styled(" ◆ ", Style::new().fg(color)),
+            Span::styled(
+                truncate(&group.name, inner.width.saturating_sub(12) as usize),
+                Style::new().fg(Color::White).bold(),
+            ),
+            Span::styled(format!("  {}", group.threads.len()), Style::new().fg(MUTED)),
+            Span::styled(
+                if active > 0 {
+                    format!("  ●{active}")
+                } else {
+                    String::new()
+                },
+                Style::new().fg(GREEN).bold(),
+            ),
+        ]));
+        for &index in &group.threads {
+            if lines.len() >= inner.height as usize {
+                break;
+            }
+            let thread = &threads[index];
             let selected = index == dashboard.selected;
-            let hovered = dashboard.mouse_position.is_some_and(|(column, row)| {
-                dashboard.thread_area.contains((column, row).into())
-                    && thread_list_start(dashboard, capacity)
-                        + ((row - dashboard.thread_area.y) / 3) as usize
-                        == index
-            });
-            let status = status(thread);
+            let row = inner.y + lines.len() as u16;
+            let hitbox = Rect::new(inner.x, row, inner.width, 1);
+            dashboard.thread_hitboxes.push((index, hitbox));
+            let hovered = dashboard
+                .mouse_position
+                .is_some_and(|point| hitbox.contains(point.into()));
             let title = thread
                 .name
                 .clone()
                 .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| project_name(&thread.cwd));
-            let marker = if selected { "▶" } else { " " };
-            let color = if selected { CYAN } else { Color::White };
-            ListItem::new(vec![
-                Line::from(vec![
-                    Span::styled(format!("{marker} {title}"), Style::new().fg(color).bold()),
-                    Span::styled(format!("  {status}"), Style::new().fg(status_color(thread))),
-                ]),
-                Line::from(Span::styled(
-                    truncate(&thread.preview, inner.width.saturating_sub(3) as usize),
-                    Style::new().fg(MUTED),
-                )),
-                Line::default(),
-            ])
-            .style(Style::new().bg(if hovered {
+                .unwrap_or_else(|| truncate(&thread.preview, 40));
+            let ago = relative_time(thread.updated_at);
+            let available = inner.width.saturating_sub(12) as usize;
+            let bg = if hovered {
                 Color::Rgb(13, 42, 66)
+            } else if selected {
+                Color::Rgb(18, 34, 62)
             } else {
                 PANEL
-            }))
-        })
-        .collect::<Vec<_>>();
-    frame.render_widget(List::new(items).style(Style::new().bg(PANEL)), inner);
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if selected { " ▶ " } else { "   " },
+                    Style::new().fg(CYAN).bg(bg).bold(),
+                ),
+                Span::styled(
+                    if is_active(thread) { "● " } else { "○ " },
+                    Style::new().fg(status_color(thread)).bg(bg).bold(),
+                ),
+                Span::styled(
+                    truncate(&title, available),
+                    Style::new()
+                        .fg(if selected { CYAN } else { Color::White })
+                        .bg(bg),
+                ),
+                Span::styled(format!("  {ago}"), Style::new().fg(MUTED).bg(bg)),
+            ]));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines).style(Style::new().bg(PANEL)), inner);
 }
 
 fn draw_events(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
@@ -511,6 +609,11 @@ fn draw_footer(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
     dashboard.quit_button = columns[2];
     let hover_hint = if dashboard.hovered_event.is_some() {
         "  CLIQUER : ouvrir le détail"
+    } else if dashboard
+        .mouse_position
+        .is_some_and(|(column, row)| thread_at(dashboard, column, row).is_some())
+    {
+        "  CLIQUER : fiche agent"
     } else {
         ""
     };
@@ -584,7 +687,7 @@ pub fn thread_at(dashboard: &Dashboard, column: u16, row: u16) -> Option<usize> 
     let area = dashboard.scene_area;
     if area.contains((column, row).into()) {
         let scene = Scene::from_threads(
-            &dashboard.threads,
+            &dashboard.effective_threads(),
             dashboard.camera_yaw,
             dashboard.camera_pitch,
             dashboard.camera_zoom,
@@ -603,13 +706,10 @@ pub fn thread_at(dashboard: &Dashboard, column: u16, row: u16) -> Option<usize> 
             .min_by(|left, right| left.1.total_cmp(&right.1))
             .map(|(index, _)| index);
     }
-    if dashboard.thread_area.contains((column, row).into()) {
-        let capacity = dashboard.thread_area.height as usize / 3;
-        let index =
-            thread_list_start(dashboard, capacity) + ((row - dashboard.thread_area.y) / 3) as usize;
-        return (index < dashboard.threads.len()).then_some(index);
-    }
-    None
+    dashboard
+        .thread_hitboxes
+        .iter()
+        .find_map(|(index, area)| area.contains((column, row).into()).then_some(*index))
 }
 
 pub fn event_at(dashboard: &Dashboard, column: u16, row: u16) -> Option<usize> {
@@ -620,11 +720,80 @@ pub fn event_at(dashboard: &Dashboard, column: u16, row: u16) -> Option<usize> {
     dashboard.events.len().checked_sub(offset + 1)
 }
 
-fn thread_list_start(dashboard: &Dashboard, capacity: usize) -> usize {
-    if capacity == 0 {
-        return 0;
+struct ProjectGroup {
+    key: String,
+    name: String,
+    threads: Vec<usize>,
+    updated_at: i64,
+}
+
+fn project_groups(threads: &[ThreadSummary]) -> Vec<ProjectGroup> {
+    let mut groups = Vec::<ProjectGroup>::new();
+    for (index, thread) in threads.iter().enumerate() {
+        let key = project_key(&thread.cwd);
+        if let Some(group) = groups.iter_mut().find(|group| group.key == key) {
+            group.threads.push(index);
+            group.updated_at = group.updated_at.max(thread.updated_at);
+        } else {
+            groups.push(ProjectGroup {
+                name: project_name(&thread.cwd),
+                key,
+                threads: vec![index],
+                updated_at: thread.updated_at,
+            });
+        }
     }
-    dashboard.selected.saturating_sub(capacity - 1)
+    for group in &mut groups {
+        group
+            .threads
+            .sort_by_key(|&index| std::cmp::Reverse(threads[index].updated_at));
+    }
+    groups.sort_by_key(|group| std::cmp::Reverse(group.updated_at));
+    groups
+}
+
+fn project_color(index: usize) -> Color {
+    [CYAN, VIOLET, MAGENTA, AMBER, GREEN, BLUE][index % 6]
+}
+
+fn is_active(thread: &ThreadSummary) -> bool {
+    matches!(
+        thread.status,
+        ThreadStatus::Active { .. } | ThreadStatus::ObservedRunning
+    )
+}
+
+fn relative_time(timestamp: i64) -> String {
+    let seconds = Local::now().timestamp().saturating_sub(timestamp).max(0) as u64;
+    match seconds {
+        0..=59 => "maint.".to_owned(),
+        60..=3599 => format!("{}m", seconds / 60),
+        3600..=86_399 => format!("{}h", seconds / 3600),
+        _ => format!("{}j", seconds / 86_400),
+    }
+}
+
+fn compact_number(value: u64) -> String {
+    if value >= 1_000_000 {
+        format!("{:.1}M", value as f64 / 1_000_000.0)
+    } else if value >= 1_000 {
+        format!("{:.0}k", value as f64 / 1_000.0)
+    } else {
+        value.to_string()
+    }
+}
+
+fn format_duration(milliseconds: u64) -> String {
+    let seconds = milliseconds / 1_000;
+    if seconds >= 3600 {
+        format!("{}h {:02}m", seconds / 3600, seconds % 3600 / 60)
+    } else if seconds >= 60 {
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
+    } else if seconds > 0 {
+        format!("{}.{:01}s", seconds, milliseconds % 1_000 / 100)
+    } else {
+        format!("{milliseconds}ms")
+    }
 }
 
 fn panel(title: &'static str) -> Block<'static> {
@@ -650,6 +819,16 @@ fn status(thread: &ThreadSummary) -> &'static str {
         ThreadStatus::SystemError => "ERREUR",
         ThreadStatus::Idle => "DISPONIBLE",
         ThreadStatus::NotLoaded => "ENREGISTRÉE",
+    }
+}
+
+fn status_short(thread: &ThreadSummary) -> &'static str {
+    match thread.status {
+        ThreadStatus::Active { .. } | ThreadStatus::ObservedRunning => "● ACTIF",
+        ThreadStatus::NeedsAttention => "! INTERVENTION",
+        ThreadStatus::SystemError => "! ERREUR",
+        ThreadStatus::RecentlyActive => "◐ RÉCENT",
+        ThreadStatus::ObservedOpen | ThreadStatus::Idle | ThreadStatus::NotLoaded => "○ REPOS",
     }
 }
 
@@ -722,6 +901,7 @@ mod tests {
                 status: ThreadStatus::Active {
                     active_flags: Vec::new(),
                 },
+                runtime: Default::default(),
             }],
             events: Vec::new(),
             selected: 0,
@@ -732,6 +912,7 @@ mod tests {
             last_refresh: Instant::now(),
             scene_area: Rect::default(),
             thread_area: Rect::default(),
+            thread_hitboxes: Vec::new(),
             refresh_button: Rect::default(),
             quit_button: Rect::default(),
             event_area: Rect::default(),
@@ -748,6 +929,7 @@ mod tests {
             final_frame_pending: false,
             hovered_event: None,
             selected_event: None,
+            agent_detail_open: false,
             mouse_position: None,
             pointer_shape: "default",
         };
@@ -763,10 +945,25 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("CODEX"));
-        assert!(rendered.contains("ESPACES"));
-        assert!(rendered.contains("SESSION ACTIVE"));
+        assert!(rendered.contains("PROJETS · CONVERSATIONS"));
+        assert!(rendered.contains("FOCUS"));
         assert!(rendered.contains("COMPLEXE D’OPÉRATIONS"));
         assert!(rendered.contains("Example operation"));
         assert!(!dashboard.scene_area.is_empty());
+        assert!(!dashboard.thread_hitboxes.is_empty());
+        let (_, hitbox) = dashboard.thread_hitboxes[0];
+        assert_eq!(thread_at(&dashboard, hitbox.x, hitbox.y), Some(0));
+
+        dashboard.agent_detail_open = true;
+        terminal.draw(|frame| draw(frame, &mut dashboard)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("FICHE AGENT"));
+        assert!(rendered.contains("RAISONNEMENT CODEX"));
     }
 }
