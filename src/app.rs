@@ -367,6 +367,9 @@ impl Dashboard {
 }
 
 pub fn run(capabilities: Capabilities, profile: RenderingProfile) -> Result<()> {
+    // This is an interactive visual application: an inherited NO_COLOR from a
+    // parent agent shell must not silently erase the dashboard palette.
+    crossterm::style::force_color_output(true);
     if !capabilities.mouse {
         println!("Codex Operations Center requires an interactive terminal.");
         println!("Run `codex-ops doctor` for capability details.");

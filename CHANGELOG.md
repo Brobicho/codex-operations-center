@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.8 - 2026-07-27
+
+- Keep the bundled HD terminal attached to the launcher so GNOME presents a visible application window and reports launch failures.
+- Force the dashboard palette even when Codex or the parent shell exports `NO_COLOR=1`.
+
 ## 0.1.7 - 2026-07-26
 
 - Group conversations by Git repository or directory and order both projects and conversations by latest activity.
