@@ -19,6 +19,9 @@ const BLUE: Color = Color::Rgb(63, 122, 255);
 const MUTED: Color = Color::Rgb(112, 139, 174);
 const AMBER: Color = Color::Rgb(255, 188, 76);
 const RED: Color = Color::Rgb(255, 83, 104);
+const GREEN: Color = Color::Rgb(75, 226, 164);
+const MAGENTA: Color = Color::Rgb(238, 91, 201);
+const VIOLET: Color = Color::Rgb(153, 104, 255);
 
 pub fn draw(frame: &mut Frame<'_>, dashboard: &mut Dashboard) {
     let area = frame.area();
@@ -347,11 +350,13 @@ fn draw_events(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
         .take(inner.height as usize / 2)
         .map(|event| {
             let time = event.received_at.with_timezone(&Local).format("%H:%M:%S");
+            let (marker, color) = activity_appearance(event);
             Line::from(vec![
                 Span::styled(format!(" {time} "), Style::new().fg(MUTED)),
+                Span::styled(format!("{marker} "), Style::new().fg(color).bold()),
                 Span::styled(
-                    truncate(&event.summary, inner.width.saturating_sub(11) as usize),
-                    Style::new().fg(Color::White),
+                    truncate(&event.summary, inner.width.saturating_sub(13) as usize),
+                    Style::new().fg(color),
                 ),
             ])
         })
@@ -365,6 +370,26 @@ fn draw_events(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
         lines
     };
     frame.render_widget(Paragraph::new(content).wrap(Wrap { trim: true }), inner);
+}
+
+fn activity_appearance(event: &crate::events::EventRecord) -> (&'static str, Color) {
+    if event.summary.contains("échou") || event.summary.contains("Interrompt") {
+        return ("!", RED);
+    }
+    match event.event.as_str() {
+        "TaskComplete" | "SessionEnd" | "Stop" => ("✓", GREEN),
+        "PatchApplied" => ("◆", MAGENTA),
+        "TaskStarted" | "SessionStart" => ("▶", CYAN),
+        "PermissionRequest" => ("!", AMBER),
+        "ContextCompacted" => ("◇", VIOLET),
+        _ => match event.tool_name.as_deref() {
+            Some("exec" | "exec_command" | "Bash") => ("›", CYAN),
+            Some("apply_patch" | "Edit" | "Write") => ("◆", MAGENTA),
+            Some("web" | "web__run") => ("◉", BLUE),
+            Some(tool) if tool.starts_with("mcp__") => ("●", VIOLET),
+            _ => ("·", Color::White),
+        },
+    }
 }
 
 fn draw_footer(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
@@ -576,6 +601,7 @@ mod tests {
             zoom_gesture: None,
             scene_refresh_pending: false,
             refresh_requested: false,
+            final_frame_pending: false,
         };
         let backend = TestBackend::new(180, 52);
         let mut terminal = Terminal::new(backend).unwrap();

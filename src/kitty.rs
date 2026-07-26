@@ -12,9 +12,11 @@ use crate::scene::Scene;
 const IMAGE_ID: u32 = 7_140_289;
 const MAX_LIVE_WIDTH: usize = 960;
 const MAX_LIVE_HEIGHT: usize = 640;
+const MAX_PREVIEW_WIDTH: usize = 480;
+const MAX_PREVIEW_HEIGHT: usize = 320;
 static FRAME_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-pub fn draw_scene(dashboard: &Dashboard) -> Result<()> {
+pub fn draw_scene(dashboard: &Dashboard, preview: bool) -> Result<()> {
     let area = dashboard.scene_area;
     let (cell_width, cell_height) = terminal_cell_size();
     let width = area.width as usize * cell_width;
@@ -31,8 +33,13 @@ pub fn draw_scene(dashboard: &Dashboard) -> Result<()> {
         dashboard.started_at.elapsed().as_secs_f32(),
         dashboard.selected,
     );
-    let scale = (MAX_LIVE_WIDTH as f32 / width as f32)
-        .min(MAX_LIVE_HEIGHT as f32 / height as f32)
+    let (max_width, max_height) = if preview {
+        (MAX_PREVIEW_WIDTH, MAX_PREVIEW_HEIGHT)
+    } else {
+        (MAX_LIVE_WIDTH, MAX_LIVE_HEIGHT)
+    };
+    let scale = (max_width as f32 / width as f32)
+        .min(max_height as f32 / height as f32)
         .min(1.0);
     let render_width = (width as f32 * scale).round().max(1.0) as usize;
     let render_height = (height as f32 * scale).round().max(1.0) as usize;
