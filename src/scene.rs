@@ -88,7 +88,7 @@ impl Scene {
             for ((thread_index, thread), slot) in project_threads.into_iter().take(4).zip(slots) {
                 let active = matches!(
                     thread.status,
-                    ThreadStatus::Active { .. } | ThreadStatus::RecentlyActive
+                    ThreadStatus::Active { .. } | ThreadStatus::ObservedRunning
                 );
                 let attention = matches!(
                     thread.status,

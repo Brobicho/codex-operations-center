@@ -5,6 +5,7 @@ mod events;
 mod hooks;
 mod kitty;
 mod paths;
+mod runtime;
 mod scene;
 mod ui;
 

@@ -79,9 +79,13 @@ fn draw_header(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
         .filter(|thread| {
             matches!(
                 thread.status,
-                ThreadStatus::Active { .. } | ThreadStatus::RecentlyActive
+                ThreadStatus::Active { .. } | ThreadStatus::ObservedRunning
             )
         })
+        .count();
+    let open = threads
+        .iter()
+        .filter(|thread| matches!(thread.status, ThreadStatus::ObservedOpen))
         .count();
     let attention = threads
         .iter()
@@ -106,6 +110,7 @@ fn draw_header(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled(format!(" {active} EN COURS "), Style::new().fg(CYAN)),
+            Span::styled(format!("  {open} OUVERTE(S) "), Style::new().fg(BLUE)),
             Span::styled(
                 format!("  {attention} INTERVENTION(S) "),
                 Style::new().fg(if attention > 0 { AMBER } else { MUTED }),
@@ -187,7 +192,7 @@ fn draw_projects(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
         entry.0 += 1;
         if matches!(
             thread.status,
-            ThreadStatus::Active { .. } | ThreadStatus::RecentlyActive
+            ThreadStatus::Active { .. } | ThreadStatus::ObservedRunning
         ) {
             entry.1 += 1;
         }
@@ -468,6 +473,8 @@ fn panel(title: &'static str) -> Block<'static> {
 fn status(thread: &ThreadSummary) -> &'static str {
     match thread.status {
         ThreadStatus::Active { .. } => "EN COURS",
+        ThreadStatus::ObservedRunning => "EN COURS · OBSERVÉE",
+        ThreadStatus::ObservedOpen => "SESSION OUVERTE",
         ThreadStatus::RecentlyActive => "ACTIVITÉ RÉCENTE",
         ThreadStatus::NeedsAttention => "INTERVENTION",
         ThreadStatus::SystemError => "ERREUR",
@@ -479,6 +486,8 @@ fn status(thread: &ThreadSummary) -> &'static str {
 fn status_color(thread: &ThreadSummary) -> Color {
     match thread.status {
         ThreadStatus::Active { .. } => CYAN,
+        ThreadStatus::ObservedRunning => Color::Rgb(61, 244, 178),
+        ThreadStatus::ObservedOpen => BLUE,
         ThreadStatus::RecentlyActive => CYAN,
         ThreadStatus::NeedsAttention => AMBER,
         ThreadStatus::SystemError => RED,

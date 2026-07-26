@@ -93,6 +93,27 @@ pub fn print_doctor() -> anyhow::Result<()> {
         capabilities.select(GraphicsMode::Auto)
     );
     println!("codex             {}", command_available("codex"));
+    match crate::codex::list_threads(250) {
+        Ok(threads) => {
+            let running = threads
+                .iter()
+                .filter(|thread| {
+                    matches!(
+                        thread.status,
+                        crate::codex::ThreadStatus::Active { .. }
+                            | crate::codex::ThreadStatus::ObservedRunning
+                    )
+                })
+                .count();
+            let open = threads
+                .iter()
+                .filter(|thread| matches!(thread.status, crate::codex::ThreadStatus::ObservedOpen))
+                .count();
+            println!("running tasks     {running}");
+            println!("open sessions     {open}");
+        }
+        Err(error) => println!("session probe     unavailable: {error:#}"),
+    }
     println!(
         "hooks             {}",
         crate::paths::hooks_path()?.display()

@@ -95,6 +95,8 @@ impl Dashboard {
                     thread.status,
                     crate::codex::ThreadStatus::Active { .. }
                         | crate::codex::ThreadStatus::SystemError
+                        | crate::codex::ThreadStatus::ObservedRunning
+                        | crate::codex::ThreadStatus::ObservedOpen
                 ) {
                     return thread;
                 }

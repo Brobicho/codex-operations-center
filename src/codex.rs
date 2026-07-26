@@ -34,6 +34,10 @@ pub enum ThreadStatus {
     #[serde(skip)]
     RecentlyActive,
     #[serde(skip)]
+    ObservedRunning,
+    #[serde(skip)]
+    ObservedOpen,
+    #[serde(skip)]
     NeedsAttention,
 }
 
@@ -53,7 +57,10 @@ pub fn list_threads(limit: u32) -> Result<Vec<ThreadSummary>> {
         .get("data")
         .cloned()
         .context("thread/list response did not include data")?;
-    serde_json::from_value(data).context("unable to decode Codex threads")
+    let mut threads: Vec<ThreadSummary> =
+        serde_json::from_value(data).context("unable to decode Codex threads")?;
+    crate::runtime::apply_observed_states(&mut threads);
+    Ok(threads)
 }
 
 struct AppServer {
