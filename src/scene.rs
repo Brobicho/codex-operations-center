@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use fontdue::layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle};
 use glam::{Vec2, Vec3};
@@ -157,12 +157,10 @@ impl Scene {
     }
 
     pub fn render_rgba(&self, width: usize, height: usize) -> Vec<u8> {
-        let mut canvas = Canvas::new(width, height);
+        let mut canvas = Canvas::with_background(width, height);
         if width == 0 || height == 0 {
             return canvas.pixels;
         }
-        canvas.background();
-        canvas.technical_grid();
 
         for room in &self.rooms {
             self.draw_room(&mut canvas, room);
@@ -552,6 +550,8 @@ struct Canvas {
     pixels: Vec<u8>,
 }
 
+type BackgroundFrame = Option<(usize, usize, Vec<u8>)>;
+
 impl Canvas {
     fn new(width: usize, height: usize) -> Self {
         Self {
@@ -559,6 +559,31 @@ impl Canvas {
             height,
             pixels: vec![0; width * height * 4],
         }
+    }
+
+    fn with_background(width: usize, height: usize) -> Self {
+        static BACKGROUND: OnceLock<Mutex<BackgroundFrame>> = OnceLock::new();
+        if width == 0 || height == 0 {
+            return Self::new(width, height);
+        }
+        let cache = BACKGROUND.get_or_init(|| Mutex::new(None));
+        if let Ok(cached) = cache.lock()
+            && let Some((cached_width, cached_height, pixels)) = cached.as_ref()
+            && (*cached_width, *cached_height) == (width, height)
+        {
+            return Self {
+                width,
+                height,
+                pixels: pixels.clone(),
+            };
+        }
+        let mut canvas = Self::new(width, height);
+        canvas.background();
+        canvas.technical_grid();
+        if let Ok(mut cached) = cache.lock() {
+            *cached = Some((width, height, canvas.pixels.clone()));
+        }
+        canvas
     }
 
     fn point(&self, point: Vec2) -> Vec2 {
@@ -609,12 +634,20 @@ impl Canvas {
             return;
         }
         let offset = (y as usize * self.width + x as usize) * 4;
+        let color = color.clamp(Vec3::ZERO, Vec3::ONE);
+        if alpha >= 0.999 {
+            self.pixels[offset] = (color.x * 255.0) as u8;
+            self.pixels[offset + 1] = (color.y * 255.0) as u8;
+            self.pixels[offset + 2] = (color.z * 255.0) as u8;
+            self.pixels[offset + 3] = 255;
+            return;
+        }
         let existing = Vec3::new(
             self.pixels[offset] as f32 / 255.0,
             self.pixels[offset + 1] as f32 / 255.0,
             self.pixels[offset + 2] as f32 / 255.0,
         );
-        let blended = existing.lerp(color.clamp(Vec3::ZERO, Vec3::ONE), alpha.clamp(0.0, 1.0));
+        let blended = existing.lerp(color, alpha.clamp(0.0, 1.0));
         self.pixels[offset] = (blended.x * 255.0) as u8;
         self.pixels[offset + 1] = (blended.y * 255.0) as u8;
         self.pixels[offset + 2] = (blended.z * 255.0) as u8;

@@ -10,9 +10,9 @@ use serde_json::Value;
 use crate::codex::{ThreadStatus, ThreadSummary};
 use crate::events::EventRecord;
 
-const TAIL_BYTES: u64 = 4 * 1024 * 1024;
-const ACTIVITY_TAIL_BYTES: u64 = 1024 * 1024;
-const MAX_ACTIVITY_SESSIONS: usize = 24;
+const TAIL_BYTES: u64 = 1024 * 1024;
+const ACTIVITY_TAIL_BYTES: u64 = 256 * 1024;
+const MAX_ACTIVITY_SESSIONS: usize = 12;
 const RECENT_WINDOW: Duration = Duration::from_secs(10 * 60);
 const UNCONFIRMED_RUNNING_WINDOW: Duration = Duration::from_secs(5 * 60);
 const OPEN_ACTIVITY_WINDOW: Duration = Duration::from_secs(90);
@@ -195,9 +195,9 @@ fn read_activity(
             turn_id: None,
             cwd: thread.cwd.clone(),
             model: None,
-            event: event.to_owned(),
-            tool_name: tool_name.map(ToOwned::to_owned),
-            summary: summary.to_owned(),
+            event,
+            tool_name,
+            summary,
             payload: Value::Null,
         });
     }
@@ -207,21 +207,21 @@ fn read_activity(
     Ok(events)
 }
 
-fn activity_summary(value: &Value) -> Option<(&'static str, Option<&str>, &'static str)> {
+fn activity_summary(value: &Value) -> Option<(String, Option<String>, String)> {
     match value.get("type").and_then(Value::as_str)? {
         "event_msg" => match value.pointer("/payload/type").and_then(Value::as_str)? {
-            "task_started" => Some(("TaskStarted", None, "A commencé une nouvelle tâche")),
-            "task_complete" => Some(("TaskComplete", None, "A terminé sa tâche")),
-            "turn_aborted" => Some(("TurnAborted", None, "La tâche a été interrompue")),
+            "task_started" => owned_activity("TaskStarted", None, "Commence une nouvelle tâche"),
+            "task_complete" => owned_activity("TaskComplete", None, "Termine sa tâche"),
+            "turn_aborted" => owned_activity("TurnAborted", None, "Interrompt la tâche"),
             "patch_apply_end" => Some((
-                "PatchApplied",
-                Some("apply_patch"),
-                "A modifié des fichiers",
+                "PatchApplied".to_owned(),
+                Some("apply_patch".to_owned()),
+                changed_files_summary(value),
             )),
             "context_compacted" => Some((
-                "ContextCompacted",
+                "ContextCompacted".to_owned(),
                 None,
-                "A optimisé son contexte de travail",
+                "Optimise son contexte de travail".to_owned(),
             )),
             _ => None,
         },
@@ -231,16 +231,142 @@ fn activity_summary(value: &Value) -> Option<(&'static str, Option<&str>, &'stat
         {
             let tool = value.pointer("/payload/name").and_then(Value::as_str)?;
             let summary = match tool {
-                "exec" | "exec_command" => "Exécute une commande",
-                "apply_patch" => "Modifie des fichiers",
-                "imagegen" | "image_gen" => "Crée un élément visuel",
-                "web" | "web__run" => "Consulte une source en ligne",
-                _ if tool.starts_with("mcp__") => "Consulte un service connecté",
+                "exec" | "exec_command" => custom_call_command(value)
+                    .map(|command| summarize_command(&command))
+                    .unwrap_or_else(|| "Lance un script shell".to_owned()),
+                "apply_patch" => "Prépare une modification de fichiers".to_owned(),
+                "imagegen" | "image_gen" => "Crée un élément visuel".to_owned(),
+                "web" | "web__run" => "Consulte une source en ligne".to_owned(),
+                _ if tool.starts_with("mcp__") => "Consulte un service connecté".to_owned(),
                 _ => return None,
             };
-            Some(("ToolStarted", Some(tool), summary))
+            Some(("ToolStarted".to_owned(), Some(tool.to_owned()), summary))
         }
         _ => None,
+    }
+}
+
+fn owned_activity(
+    event: &str,
+    tool: Option<&str>,
+    summary: &str,
+) -> Option<(String, Option<String>, String)> {
+    Some((
+        event.to_owned(),
+        tool.map(ToOwned::to_owned),
+        summary.to_owned(),
+    ))
+}
+
+fn changed_files_summary(value: &Value) -> String {
+    let Some(changes) = value.pointer("/payload/changes").and_then(Value::as_object) else {
+        return "Modifie des fichiers".to_owned();
+    };
+    let mut files = changes
+        .keys()
+        .filter_map(|path| Path::new(path).file_name()?.to_str().map(ToOwned::to_owned))
+        .collect::<Vec<_>>();
+    files.sort();
+    files.dedup();
+    let extra = files.len().saturating_sub(3);
+    files.truncate(3);
+    if files.is_empty() {
+        "Modifie des fichiers".to_owned()
+    } else if extra == 0 {
+        format!("Modifie {}", files.join(", "))
+    } else {
+        format!("Modifie {} (+{extra})", files.join(", "))
+    }
+}
+
+fn custom_call_command(value: &Value) -> Option<String> {
+    for pointer in ["/payload/input", "/payload/arguments"] {
+        let Some(input) = value.pointer(pointer).and_then(Value::as_str) else {
+            continue;
+        };
+        if let Ok(parsed) = serde_json::from_str::<Value>(input)
+            && let Some(command) = parsed
+                .get("cmd")
+                .or_else(|| parsed.get("command"))
+                .and_then(Value::as_str)
+        {
+            return Some(command.to_owned());
+        }
+        for key in ["cmd", "command"] {
+            let needle = format!("\"{key}\":");
+            let Some(rest) = input.split_once(&needle).map(|(_, rest)| rest.trim_start()) else {
+                continue;
+            };
+            if let Some(Ok(command)) = serde_json::Deserializer::from_str(rest)
+                .into_iter::<String>()
+                .next()
+            {
+                return Some(command);
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn summarize_command(command: &str) -> String {
+    let first = command
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    let lower = first.to_lowercase();
+    let safe_prefixes = [
+        "cargo ",
+        "git status",
+        "git diff",
+        "git log",
+        "git show",
+        "npm test",
+        "npm run",
+        "pnpm test",
+        "pnpm run",
+        "pytest",
+        "php artisan test",
+    ];
+    if safe_prefixes.iter().any(|prefix| lower.starts_with(prefix)) {
+        return format!("Commande · {}", truncate_detail(first, 76));
+    }
+    let programs = command
+        .split(['\n', ';', '|'])
+        .flat_map(|part| part.split("&&"))
+        .filter_map(|part| {
+            let mut words = part.split_whitespace();
+            let mut word = words.next()?;
+            while matches!(word, "if" | "then" | "do" | "done" | "fi" | "for" | "while") {
+                word = words.next()?;
+            }
+            let word = word.rsplit('/').next().unwrap_or(word);
+            word.chars()
+                .all(|character| character.is_ascii_alphanumeric() || "_-.$".contains(character))
+                .then(|| word.trim_start_matches('$').to_owned())
+        })
+        .filter(|word| !word.is_empty() && !word.contains('='))
+        .take(5)
+        .collect::<Vec<_>>();
+    if programs.is_empty() {
+        "Lance un script shell".to_owned()
+    } else {
+        format!("Shell · {}", programs.join(" → "))
+    }
+}
+
+fn truncate_detail(value: &str, width: usize) -> String {
+    let flattened = value.replace(['\n', '\r', '\t'], " ");
+    if flattened.chars().count() <= width {
+        flattened
+    } else {
+        format!(
+            "{}…",
+            flattened
+                .chars()
+                .take(width.saturating_sub(1))
+                .collect::<String>()
+        )
     }
 }
 
@@ -339,12 +465,40 @@ mod tests {
 
         let events = read_activity(file.path(), &thread, 10).unwrap();
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].summary, "Exécute une commande");
+        assert_eq!(events[0].summary, "Lance un script shell");
         assert_eq!(events[0].payload, Value::Null);
         assert!(
             !serde_json::to_string(&events[0])
                 .unwrap()
                 .contains("super-secret")
         );
+    }
+
+    #[test]
+    fn activity_adapter_describes_safe_commands_and_changed_files() {
+        let command = serde_json::json!({
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "exec",
+                "input": "const r = await tools.exec_command({\"cmd\":\"cargo test --locked\",\"workdir\":\"/work/project\"});"
+            }
+        });
+        assert_eq!(
+            activity_summary(&command).unwrap().2,
+            "Commande · cargo test --locked"
+        );
+
+        let patch = serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "patch_apply_end",
+                "changes": {
+                    "/work/project/src/app.rs": {},
+                    "/work/project/src/ui.rs": {}
+                }
+            }
+        });
+        assert_eq!(activity_summary(&patch).unwrap().2, "Modifie app.rs, ui.rs");
     }
 }

@@ -572,6 +572,10 @@ mod tests {
             status_message: None,
             last_ultra_frame: Instant::now(),
             scene_dirty: true,
+            last_camera_input: None,
+            zoom_gesture: None,
+            scene_refresh_pending: false,
+            refresh_requested: false,
         };
         let backend = TestBackend::new(180, 52);
         let mut terminal = Terminal::new(backend).unwrap();
