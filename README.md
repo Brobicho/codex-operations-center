@@ -52,6 +52,7 @@ codex-ops uninstall --purge
 ## Project goals
 
 - Observe active Codex sessions across local projects.
+- Group conversations by Git repository and latest activity.
 - Translate raw lifecycle events into concise, human-readable activity.
 - Surface approvals and failures that need attention.
 - Provide an interactive mouse-and-keyboard control center.
@@ -80,7 +81,7 @@ codex-ops --graphics safe
 - `codex app-server` is used to list stored local threads through its documented JSON-RPC API.
 - Global Codex lifecycle hooks provide live events for every trusted local project.
 - When a Codex surface does not emit hooks, a schema-tolerant, read-only adapter observes the local rollout tail and open process handles.
-- That adapter retains event metadata only; prompt text, assistant messages, command arguments, tool outputs, and reasoning are never copied into the Operations Center event store.
+- That adapter retains event metadata only; prompt text, assistant messages, command arguments, tool outputs, and reasoning contents are never copied into the Operations Center event store. The live agent inspector reads only declared reasoning effort and token counts.
 - Cloud and other-machine sessions require separate collectors and are not presented as locally observed activity.
 - Captured lifecycle events stay on the local machine; the project includes no telemetry.
 
@@ -102,7 +103,8 @@ The integration writes its state beneath `~/.local/share/codex-ops` on Linux and
 
 | Input | Action |
 | --- | --- |
-| Click a node or session | Select the corresponding Codex thread |
+| Click an agent or conversation | Open its live agent sheet and select the corresponding Codex thread |
+| Click an activity | Open its exact timestamp, command, tool, and changed-file details |
 | Drag the scene or use Left/Right | Move the view |
 | Ctrl+mouse wheel or `+`/`-` | Zoom without reacting to launch-time scroll events |
 | `0` | Recenter the camera and reset zoom |

@@ -40,6 +40,7 @@ pub struct Dashboard {
     pub last_refresh: Instant,
     pub scene_area: ratatui::layout::Rect,
     pub thread_area: ratatui::layout::Rect,
+    pub thread_hitboxes: Vec<(usize, ratatui::layout::Rect)>,
     pub refresh_button: ratatui::layout::Rect,
     pub quit_button: ratatui::layout::Rect,
     pub event_area: ratatui::layout::Rect,
@@ -56,6 +57,7 @@ pub struct Dashboard {
     pub final_frame_pending: bool,
     pub hovered_event: Option<usize>,
     pub selected_event: Option<usize>,
+    pub agent_detail_open: bool,
     pub mouse_position: Option<(u16, u16)>,
     pub pointer_shape: &'static str,
 }
@@ -77,6 +79,7 @@ impl Dashboard {
             last_refresh: Instant::now(),
             scene_area: ratatui::layout::Rect::default(),
             thread_area: ratatui::layout::Rect::default(),
+            thread_hitboxes: Vec::new(),
             refresh_button: ratatui::layout::Rect::default(),
             quit_button: ratatui::layout::Rect::default(),
             event_area: ratatui::layout::Rect::default(),
@@ -93,6 +96,7 @@ impl Dashboard {
             final_frame_pending: false,
             hovered_event: None,
             selected_event: None,
+            agent_detail_open: false,
             mouse_position: None,
             pointer_shape: "default",
         }
@@ -112,25 +116,26 @@ impl Dashboard {
         self.scene_refresh_pending |= previous_scene != self.scene_signature();
     }
 
-    fn scene_signature(&self) -> Vec<(String, String, String, bool)> {
+    fn scene_signature(&self) -> Vec<(String, String, String, bool, &'static str)> {
         let mut projects = Vec::<(String, usize)>::new();
         let mut signature = Vec::new();
         for (index, thread) in self.effective_threads().into_iter().enumerate() {
+            let thread_project = crate::scene::project_key(&thread.cwd);
             let project_index = projects
                 .iter()
-                .position(|(cwd, _)| cwd == &thread.cwd)
+                .position(|(key, _)| key == &thread_project)
                 .or_else(|| {
-                    if projects.len() >= 3 {
+                    if projects.len() >= 6 {
                         None
                     } else {
-                        projects.push((thread.cwd.clone(), 0));
+                        projects.push((thread_project, 0));
                         Some(projects.len() - 1)
                     }
                 });
             let Some(project_index) = project_index else {
                 continue;
             };
-            if projects[project_index].1 >= 2 {
+            if projects[project_index].1 >= 3 {
                 continue;
             }
             projects[project_index].1 += 1;
@@ -138,7 +143,14 @@ impl Dashboard {
                 .name
                 .clone()
                 .unwrap_or_else(|| thread.preview.clone());
-            signature.push((thread.id, thread.cwd, label, index == self.selected));
+            let state = match thread.status {
+                crate::codex::ThreadStatus::Active { .. }
+                | crate::codex::ThreadStatus::ObservedRunning => "active",
+                crate::codex::ThreadStatus::SystemError
+                | crate::codex::ThreadStatus::NeedsAttention => "attention",
+                _ => "rest",
+            };
+            signature.push((thread.id, thread.cwd, label, index == self.selected, state));
         }
         signature
     }
@@ -206,6 +218,8 @@ impl Dashboard {
                 KeyCode::Esc => {
                     if self.selected_event.is_some() {
                         self.selected_event = None;
+                    } else if self.agent_detail_open {
+                        self.agent_detail_open = false;
                     } else {
                         self.should_quit = true;
                     }
@@ -273,6 +287,7 @@ impl Dashboard {
                         let point = (mouse.column, mouse.row).into();
                         if let Some(index) = ui::event_at(self, mouse.column, mouse.row) {
                             self.selected_event = Some(index);
+                            self.agent_detail_open = false;
                             return;
                         }
                         if self.refresh_button.contains(point) {
@@ -284,12 +299,13 @@ impl Dashboard {
                             self.should_quit = true;
                             return;
                         }
-                        if let Some(index) = ui::thread_at(self, mouse.column, mouse.row)
-                            && self.selected != index
-                        {
-                            self.selected = index;
+                        if let Some(index) = ui::thread_at(self, mouse.column, mouse.row) {
+                            if self.selected != index {
+                                self.selected = index;
+                                self.scene_dirty = true;
+                            }
                             self.selected_event = None;
-                            self.scene_dirty = true;
+                            self.agent_detail_open = true;
                         }
                         if !self.scene_area.contains(point) {
                             return;

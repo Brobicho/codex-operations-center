@@ -7,20 +7,21 @@ use std::time::{Duration, SystemTime};
 use chrono::{DateTime, Datelike, Utc};
 use serde_json::Value;
 
-use crate::codex::{ThreadStatus, ThreadSummary};
+use crate::codex::{ThreadRuntime, ThreadStatus, ThreadSummary};
 use crate::events::EventRecord;
 
-const TAIL_BYTES: u64 = 1024 * 1024;
+const TAIL_BYTES: u64 = 16 * 1024 * 1024;
 const ACTIVITY_TAIL_BYTES: u64 = 256 * 1024;
 const MAX_ACTIVITY_SESSIONS: usize = 12;
 const RECENT_WINDOW: Duration = Duration::from_secs(10 * 60);
 const UNCONFIRMED_RUNNING_WINDOW: Duration = Duration::from_secs(5 * 60);
 const OPEN_ACTIVITY_WINDOW: Duration = Duration::from_secs(90);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum Lifecycle {
     Running,
     Complete,
+    #[default]
     Unknown,
 }
 
@@ -33,12 +34,6 @@ pub fn apply_observed_states(threads: &mut [ThreadSummary]) {
     let now = SystemTime::now();
 
     for thread in threads {
-        if matches!(
-            thread.status,
-            ThreadStatus::Active { .. } | ThreadStatus::SystemError
-        ) {
-            continue;
-        }
         let Some(path) = paths.get(&thread.id) else {
             continue;
         };
@@ -52,8 +47,15 @@ pub fn apply_observed_states(threads: &mut [ThreadSummary]) {
         if !is_open && age > RECENT_WINDOW {
             continue;
         }
-        let lifecycle = read_lifecycle(path).unwrap_or(Lifecycle::Unknown);
-        thread.status = match (is_open, lifecycle, age) {
+        let observed = read_runtime(path).unwrap_or_default();
+        thread.runtime = observed.metrics;
+        if matches!(
+            thread.status,
+            ThreadStatus::Active { .. } | ThreadStatus::SystemError
+        ) {
+            continue;
+        }
+        thread.status = match (is_open, observed.lifecycle, age) {
             (true, Lifecycle::Running, _) => ThreadStatus::ObservedRunning,
             (true, Lifecycle::Unknown, age) if age <= OPEN_ACTIVITY_WINDOW => {
                 ThreadStatus::ObservedRunning
@@ -66,6 +68,12 @@ pub fn apply_observed_states(threads: &mut [ThreadSummary]) {
             _ => thread.status.clone(),
         };
     }
+}
+
+#[derive(Default)]
+struct ObservedRuntime {
+    lifecycle: Lifecycle,
+    metrics: ThreadRuntime,
 }
 
 /// Builds a privacy-preserving activity feed from Codex's local rollout files.
@@ -129,7 +137,7 @@ fn locate_session_files(root: &Path, threads: &[ThreadSummary]) -> HashMap<Strin
     result
 }
 
-fn read_lifecycle(path: &Path) -> std::io::Result<Lifecycle> {
+fn read_runtime(path: &Path) -> std::io::Result<ObservedRuntime> {
     let mut file = File::open(path)?;
     let length = file.metadata()?.len();
     let start = length.saturating_sub(TAIL_BYTES);
@@ -137,24 +145,93 @@ fn read_lifecycle(path: &Path) -> std::io::Result<Lifecycle> {
     let mut tail = String::new();
     file.read_to_string(&mut tail)?;
 
-    for line in tail.lines().rev() {
+    let mut observed = ObservedRuntime::default();
+    let mut turn_running = false;
+    for line in tail.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if value.get("type").and_then(Value::as_str) != Some("event_msg") {
-            continue;
+        if value.get("type").and_then(Value::as_str) == Some("turn_context") {
+            observed.metrics.model = value
+                .pointer("/payload/model")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            observed.metrics.reasoning_effort = value
+                .pointer("/payload/effort")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
         }
-        match value
-            .pointer("/payload/type")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
+        if value.get("type").and_then(Value::as_str) == Some("event_msg") {
+            match value
+                .pointer("/payload/type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+            {
+                "task_started" => {
+                    observed.lifecycle = Lifecycle::Running;
+                    turn_running = true;
+                    observed.metrics.activity_started_at = value
+                        .pointer("/payload/started_at")
+                        .and_then(Value::as_i64)
+                        .or_else(|| event_timestamp(&value));
+                    observed.metrics.actions_this_turn = 0;
+                    observed.metrics.last_action = Some("Analyse la demande".to_owned());
+                }
+                "task_complete" | "turn_aborted" => {
+                    observed.lifecycle = Lifecycle::Complete;
+                    turn_running = false;
+                    observed.metrics.activity_started_at = None;
+                    observed.metrics.last_turn_duration_ms = value
+                        .pointer("/payload/duration_ms")
+                        .and_then(Value::as_u64);
+                    observed.metrics.time_to_first_token_ms = value
+                        .pointer("/payload/time_to_first_token_ms")
+                        .and_then(Value::as_u64);
+                    observed.metrics.last_action = Some(
+                        if value.pointer("/payload/type").and_then(Value::as_str)
+                            == Some("turn_aborted")
+                        {
+                            "Activité interrompue".to_owned()
+                        } else {
+                            "Tâche terminée".to_owned()
+                        },
+                    );
+                }
+                "token_count" => {
+                    observed.metrics.context_tokens = value
+                        .pointer("/payload/info/last_token_usage/total_tokens")
+                        .and_then(Value::as_u64);
+                    observed.metrics.context_window = value
+                        .pointer("/payload/info/model_context_window")
+                        .and_then(Value::as_u64);
+                    observed.metrics.reasoning_tokens = value
+                        .pointer("/payload/info/last_token_usage/reasoning_output_tokens")
+                        .and_then(Value::as_u64);
+                }
+                _ => {}
+            }
+        }
+        if turn_running
+            && let Some((_, _, summary, _)) = activity_summary(&value)
+            && !matches!(
+                value.pointer("/payload/type").and_then(Value::as_str),
+                Some("task_started" | "task_complete" | "turn_aborted")
+            )
         {
-            "task_started" => return Ok(Lifecycle::Running),
-            "task_complete" | "turn_aborted" => return Ok(Lifecycle::Complete),
-            _ => {}
+            observed.metrics.actions_this_turn =
+                observed.metrics.actions_this_turn.saturating_add(1);
+            observed.metrics.last_action = Some(summary);
         }
     }
-    Ok(Lifecycle::Unknown)
+    Ok(observed)
+}
+
+fn event_timestamp(value: &Value) -> Option<i64> {
+    value
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(|timestamp| DateTime::parse_from_rfc3339(timestamp).ok())
+        .map(|timestamp| timestamp.timestamp())
 }
 
 fn read_activity(
@@ -459,7 +536,49 @@ mod tests {
             r#"{{"type":"event_msg","payload":{{"type":"task_started"}}}}"#
         )
         .unwrap();
-        assert_eq!(read_lifecycle(file.path()).unwrap(), Lifecycle::Running);
+        assert_eq!(
+            read_runtime(file.path()).unwrap().lifecycle,
+            Lifecycle::Running
+        );
+    }
+
+    #[test]
+    fn runtime_metrics_are_read_from_codex_events() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"{{"timestamp":"2026-07-26T20:00:00Z","type":"turn_context","payload":{{"model":"gpt-5.6-sol","effort":"high"}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"timestamp":"2026-07-26T20:00:01Z","type":"event_msg","payload":{{"type":"task_started","started_at":1785096001}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"timestamp":"2026-07-26T20:00:02Z","type":"response_item","payload":{{"type":"custom_tool_call","name":"exec","input":"{{\"cmd\":\"cargo test\"}}"}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"timestamp":"2026-07-26T20:00:03Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":120000,"reasoning_output_tokens":840}},"model_context_window":258400}}}}}}"#
+        )
+        .unwrap();
+
+        let observed = read_runtime(file.path()).unwrap();
+        assert_eq!(observed.lifecycle, Lifecycle::Running);
+        assert_eq!(observed.metrics.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(observed.metrics.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(observed.metrics.activity_started_at, Some(1785096001));
+        assert_eq!(observed.metrics.actions_this_turn, 1);
+        assert_eq!(observed.metrics.context_tokens, Some(120000));
+        assert_eq!(observed.metrics.context_window, Some(258400));
+        assert_eq!(observed.metrics.reasoning_tokens, Some(840));
+        assert_eq!(
+            observed.metrics.last_action.as_deref(),
+            Some("Commande · cargo test")
+        );
     }
 
     #[test]
@@ -477,6 +596,7 @@ mod tests {
             agent_nickname: None,
             agent_role: None,
             status: ThreadStatus::Idle,
+            runtime: ThreadRuntime::default(),
         };
         let mut file = tempfile::NamedTempFile::new().unwrap();
         writeln!(

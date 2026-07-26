@@ -40,6 +40,7 @@ pub struct SceneRoom {
     pub half_width: f32,
     pub half_height: f32,
     pub color: Vec3,
+    pub infrastructure: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -64,16 +65,28 @@ impl Scene {
     ) -> Self {
         let mut projects = Vec::<(String, Vec<(usize, &ThreadSummary)>)>::new();
         for (index, thread) in threads.iter().enumerate() {
-            if let Some((_, project_threads)) =
-                projects.iter_mut().find(|(cwd, _)| cwd == &thread.cwd)
+            let project = project_key(&thread.cwd);
+            if let Some((_, project_threads)) = projects.iter_mut().find(|(key, _)| key == &project)
             {
                 project_threads.push((index, thread));
             } else {
-                projects.push((thread.cwd.clone(), vec![(index, thread)]));
+                projects.push((project, vec![(index, thread)]));
             }
         }
+        projects.sort_by_key(|(_, project_threads)| {
+            std::cmp::Reverse(
+                project_threads
+                    .iter()
+                    .map(|(_, thread)| thread.updated_at)
+                    .max()
+                    .unwrap_or_default(),
+            )
+        });
+        for (_, project_threads) in &mut projects {
+            project_threads.sort_by_key(|(_, thread)| std::cmp::Reverse(thread.updated_at));
+        }
 
-        let visible = projects.into_iter().take(3).collect::<Vec<_>>();
+        let visible = projects.into_iter().take(6).collect::<Vec<_>>();
         let room_layout = room_layout(visible.len());
         let mut rooms = Vec::new();
         let mut nodes = Vec::new();
@@ -87,10 +100,11 @@ impl Scene {
                 half_width: layout.1,
                 half_height: layout.2,
                 color,
+                infrastructure: false,
             });
 
-            let slots = agent_slots(project_threads.len().min(2));
-            for ((thread_index, thread), slot) in project_threads.into_iter().take(2).zip(slots) {
+            let slots = agent_slots(project_threads.len().min(3));
+            for ((thread_index, thread), slot) in project_threads.into_iter().take(3).zip(slots) {
                 let active = matches!(
                     thread.status,
                     ThreadStatus::Active { .. } | ThreadStatus::ObservedRunning
@@ -117,13 +131,12 @@ impl Scene {
                     .unwrap_or_else(|| project_name(&thread.cwd));
                 let label = label_source.chars().take(18).collect();
                 let state_label = match thread.status {
-                    ThreadStatus::Active { .. } | ThreadStatus::ObservedRunning => "EN COURS",
-                    ThreadStatus::ObservedOpen => "SESSION OUVERTE",
-                    ThreadStatus::RecentlyActive => "ACTIVITÉ RÉCENTE",
-                    ThreadStatus::NeedsAttention => "INTERVENTION",
+                    ThreadStatus::Active { .. } | ThreadStatus::ObservedRunning => "ACTIF",
+                    ThreadStatus::ObservedOpen | ThreadStatus::Idle => "REPOS",
+                    ThreadStatus::RecentlyActive => "RÉCENT",
+                    ThreadStatus::NeedsAttention => "À VOIR",
                     ThreadStatus::SystemError => "ERREUR",
-                    ThreadStatus::Idle => "DISPONIBLE",
-                    ThreadStatus::NotLoaded => "ENREGISTRÉE",
+                    ThreadStatus::NotLoaded => "REPOS",
                 }
                 .to_owned();
                 nodes.push(SceneNode {
@@ -144,6 +157,14 @@ impl Scene {
                 });
             }
         }
+        rooms.push(SceneRoom {
+            label: "INFRASTRUCTURE".to_owned(),
+            center: Vec2::new(0.50, 0.84),
+            half_width: 0.16,
+            half_height: 0.105,
+            color: Vec3::new(0.08, 0.86, 0.84),
+            infrastructure: true,
+        });
 
         Self {
             nodes,
@@ -296,12 +317,30 @@ impl Scene {
         }
 
         if canvas.width >= 320 {
-            let target_width =
-                (canvas.width as f32 * 0.17).clamp(canvas.logical(96.0), canvas.logical(260.0));
-            canvas.sprite(
+            let target_width = (canvas.width as f32
+                * if self.rooms.len() > 4 { 0.095 } else { 0.17 })
+            .clamp(canvas.logical(62.0), canvas.logical(230.0));
+            if node.active {
+                canvas.glow_circle(
+                    center + Vec2::Y * target_width * 0.17,
+                    target_width * (0.19 + pulse * 0.025),
+                    node.color * 0.55,
+                );
+            }
+            canvas.sprite_modulated(
                 workstation_sprite(),
                 center + Vec2::new(0.0, 13.0 * scale),
                 target_width,
+                if node.active || node.attention {
+                    1.0
+                } else {
+                    0.52
+                },
+                if node.active || node.attention {
+                    1.0
+                } else {
+                    0.22
+                },
             );
             let beacon = center + Vec2::new(-target_width * 0.22, -target_width * 0.34);
             canvas.glow_circle(beacon, 3.0 * scale + pulse, node.color);
@@ -309,6 +348,14 @@ impl Scene {
             if node.attention {
                 let warning = center + Vec2::new(target_width * 0.34, -target_width * 0.42);
                 canvas.glow_circle(warning, 5.0 * scale, node.color);
+            } else if !node.active {
+                canvas.label(
+                    center + Vec2::new(target_width * 0.22, -target_width * 0.28),
+                    "Z·Z",
+                    Vec3::new(0.38, 0.46, 0.58),
+                    (target_width * 0.10).max(canvas.logical(8.0)),
+                    false,
+                );
             }
             return;
         }
@@ -406,17 +453,17 @@ impl Scene {
     }
 
     fn draw_infrastructure(&self, canvas: &mut Canvas) {
-        if self.rooms.len() < 2 {
+        let Some(room) = self.rooms.iter().find(|room| room.infrastructure) else {
             return;
-        }
-        let center = canvas.point(self.view_point(Vec2::new(0.50, 0.82)));
+        };
+        let center = canvas.point(self.view_point(room.center));
         let scale = (canvas.width.min(canvas.height * 2) as f32 / 210.0)
             .clamp(canvas.logical(0.4), canvas.logical(3.0));
         if canvas.width >= 320 {
             canvas.sprite(
                 server_cluster_sprite(),
                 center + Vec2::Y * 24.0 * scale,
-                (canvas.width as f32 * 0.16).clamp(canvas.logical(110.0), canvas.logical(240.0)),
+                (canvas.width as f32 * 0.115).clamp(canvas.logical(76.0), canvas.logical(190.0)),
             );
             return;
         }
@@ -441,6 +488,9 @@ impl Scene {
 
     fn draw_connections(&self, canvas: &mut Canvas) {
         for node in &self.nodes {
+            if !node.active && !node.attention && node.thread_index != self.selected {
+                continue;
+            }
             let Some(parent_id) = node.parent_thread_id.as_deref() else {
                 continue;
             };
@@ -478,6 +528,9 @@ impl Scene {
             );
         }
         for node in &self.nodes {
+            if !node.active && !node.attention && node.thread_index != self.selected {
+                continue;
+            }
             let center = canvas.point(self.view_point(node.position.truncate()));
             let text = format!("{}  ·  {}", node.label, node.state_label);
             canvas.label(
@@ -538,6 +591,9 @@ impl Widget for UnicodeScene<'_> {
             }
         }
         for node in &self.scene.nodes {
+            if !node.active && !node.attention && node.thread_index != self.scene.selected {
+                continue;
+            }
             let normalized = self.scene.view_point(node.position.truncate());
             let point = Vec2::new(normalized.x * width as f32, normalized.y * height as f32);
             let x = area.x.saturating_add(point.x.max(0.0) as u16);
@@ -548,7 +604,12 @@ impl Widget for UnicodeScene<'_> {
                 } else {
                     "●"
                 };
-                let label = format!(" {marker} {} ", node.label);
+                let state = if node.active {
+                    "ACTIF"
+                } else {
+                    &node.state_label
+                };
+                let label = format!(" {marker} {} · {state} ", node.label);
                 buffer.set_string(
                     x.saturating_sub(2),
                     y.saturating_sub(3),
@@ -903,6 +964,17 @@ impl Canvas {
     }
 
     fn sprite(&mut self, sprite: &Sprite, ground: Vec2, target_width: f32) {
+        self.sprite_modulated(sprite, ground, target_width, 1.0, 1.0);
+    }
+
+    fn sprite_modulated(
+        &mut self,
+        sprite: &Sprite,
+        ground: Vec2,
+        target_width: f32,
+        brightness: f32,
+        saturation: f32,
+    ) {
         let target_width = target_width.max(1.0) as usize;
         let target_height =
             ((target_width as f32 * sprite.height as f32 / sprite.width as f32).max(1.0)) as usize;
@@ -917,14 +989,16 @@ impl Canvas {
                 if alpha <= 0.01 {
                     continue;
                 }
+                let color = Vec3::new(
+                    sprite.rgba[offset] as f32 / 255.0,
+                    sprite.rgba[offset + 1] as f32 / 255.0,
+                    sprite.rgba[offset + 2] as f32 / 255.0,
+                );
+                let luma = color.dot(Vec3::new(0.2126, 0.7152, 0.0722));
                 self.set(
                     left + x as isize,
                     top + y as isize,
-                    Vec3::new(
-                        sprite.rgba[offset] as f32 / 255.0,
-                        sprite.rgba[offset + 1] as f32 / 255.0,
-                        sprite.rgba[offset + 2] as f32 / 255.0,
-                    ),
+                    Vec3::splat(luma).lerp(color, saturation.clamp(0.0, 1.0)) * brightness,
                     alpha,
                 );
             }
@@ -1028,12 +1102,18 @@ fn room_layout(count: usize) -> Vec<(Vec2, f32, f32)> {
             (Vec2::new(0.29, 0.58), 0.25, 0.17),
             (Vec2::new(0.71, 0.58), 0.25, 0.17),
         ],
-        _ => vec![
-            (Vec2::new(0.29, 0.29), 0.24, 0.15),
-            (Vec2::new(0.71, 0.29), 0.24, 0.15),
-            (Vec2::new(0.29, 0.63), 0.24, 0.15),
-            (Vec2::new(0.71, 0.63), 0.24, 0.15),
-        ],
+        _ => [
+            Vec2::new(0.19, 0.20),
+            Vec2::new(0.50, 0.20),
+            Vec2::new(0.81, 0.20),
+            Vec2::new(0.19, 0.52),
+            Vec2::new(0.50, 0.52),
+            Vec2::new(0.81, 0.52),
+        ]
+        .into_iter()
+        .take(count.min(6))
+        .map(|center| (center, 0.16, 0.105))
+        .collect(),
     }
 }
 
@@ -1073,12 +1153,33 @@ fn to_color(value: Vec3) -> Color {
     )
 }
 
+pub fn project_key(cwd: &str) -> String {
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    if let Some(cached) = cache.lock().expect("project cache").get(cwd).cloned() {
+        return cached;
+    }
+    let path = std::path::Path::new(cwd);
+    let key = path
+        .ancestors()
+        .find(|candidate| candidate.join(".git").exists())
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned();
+    cache
+        .lock()
+        .expect("project cache")
+        .insert(cwd.to_owned(), key.clone());
+    key
+}
+
 pub fn project_name(cwd: &str) -> String {
-    std::path::Path::new(cwd)
+    let key = project_key(cwd);
+    std::path::Path::new(&key)
         .file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
-        .unwrap_or(cwd)
+        .unwrap_or(&key)
         .to_uppercase()
 }
 

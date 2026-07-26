@@ -20,6 +20,23 @@ pub struct ThreadSummary {
     pub agent_nickname: Option<String>,
     pub agent_role: Option<String>,
     pub status: ThreadStatus,
+    #[serde(default)]
+    pub runtime: ThreadRuntime,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadRuntime {
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub activity_started_at: Option<i64>,
+    pub last_action: Option<String>,
+    pub actions_this_turn: u32,
+    pub context_tokens: Option<u64>,
+    pub context_window: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub last_turn_duration_ms: Option<u64>,
+    pub time_to_first_token_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
