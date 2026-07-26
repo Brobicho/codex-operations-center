@@ -22,11 +22,29 @@ The project combines truthful Codex lifecycle observability with an interactive 
 | Unicode | True Color half-block software rendering | Modern terminals, tmux, and SSH |
 | Safe | Accessible text-first control center | Minimal or unknown terminals |
 
+## Data boundaries
+
+- `codex app-server` is used to list stored local threads through its documented JSON-RPC API.
+- Global Codex lifecycle hooks provide live events for every trusted local project.
+- Raw transcript files are not treated as a stable API.
+- Cloud and other-machine sessions require separate collectors and are not presented as locally observed activity.
+
+## Commands
+
+```bash
+codex-ops                  # launch the operations center
+codex-ops doctor           # inspect Codex and terminal capabilities
+codex-ops integrate        # install global lifecycle hooks
+codex-ops uninstall        # remove only the owned integration
+codex-ops uninstall --purge
+```
+
+The integration writes its state beneath `~/.local/share/codex-ops` on Linux and adds one handler per supported event to `~/.codex/hooks.json`. Existing hooks are preserved. Codex requires users to review and trust newly installed hooks through `/hooks`.
+
 ## Status
 
-Early development. The command-line bootstrap and release infrastructure are being built first, followed by Codex event collection and the interactive renderer.
+Early development. Local thread discovery, event normalization, terminal capability detection, and reversible global-hook installation are implemented. The interactive renderer is under active development.
 
 ## License
 
 MIT
-
