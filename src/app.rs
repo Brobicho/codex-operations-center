@@ -1,4 +1,4 @@
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -42,6 +42,7 @@ pub struct Dashboard {
     pub thread_area: ratatui::layout::Rect,
     pub refresh_button: ratatui::layout::Rect,
     pub quit_button: ratatui::layout::Rect,
+    pub event_area: ratatui::layout::Rect,
     pub should_quit: bool,
     pub dragging: bool,
     pub last_mouse: Option<(u16, u16)>,
@@ -53,6 +54,10 @@ pub struct Dashboard {
     pub scene_refresh_pending: bool,
     pub refresh_requested: bool,
     pub final_frame_pending: bool,
+    pub hovered_event: Option<usize>,
+    pub selected_event: Option<usize>,
+    pub mouse_position: Option<(u16, u16)>,
+    pub pointer_shape: &'static str,
 }
 
 impl Dashboard {
@@ -74,6 +79,7 @@ impl Dashboard {
             thread_area: ratatui::layout::Rect::default(),
             refresh_button: ratatui::layout::Rect::default(),
             quit_button: ratatui::layout::Rect::default(),
+            event_area: ratatui::layout::Rect::default(),
             should_quit: false,
             dragging: false,
             last_mouse: None,
@@ -85,6 +91,10 @@ impl Dashboard {
             scene_refresh_pending: false,
             refresh_requested: false,
             final_frame_pending: false,
+            hovered_event: None,
+            selected_event: None,
+            mouse_position: None,
+            pointer_shape: "default",
         }
     }
 
@@ -192,7 +202,14 @@ impl Dashboard {
                 self.should_quit = true
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+                KeyCode::Char('q') => self.should_quit = true,
+                KeyCode::Esc => {
+                    if self.selected_event.is_some() {
+                        self.selected_event = None;
+                    } else {
+                        self.should_quit = true;
+                    }
+                }
                 KeyCode::Down | KeyCode::Char('j') => {
                     if !self.threads.is_empty() {
                         self.selected = (self.selected + 1).min(self.threads.len() - 1);
@@ -236,61 +253,100 @@ impl Dashboard {
                 }
                 _ => {}
             },
-            Event::Mouse(mouse) => match mouse.kind {
-                MouseEventKind::ScrollUp
-                    if mouse.modifiers.contains(KeyModifiers::CONTROL)
-                        && self.scene_area.contains((mouse.column, mouse.row).into()) =>
-                {
-                    self.wheel_zoom(1);
-                }
-                MouseEventKind::ScrollDown
-                    if mouse.modifiers.contains(KeyModifiers::CONTROL)
-                        && self.scene_area.contains((mouse.column, mouse.row).into()) =>
-                {
-                    self.wheel_zoom(-1);
-                }
-                MouseEventKind::Down(MouseButton::Left) => {
-                    let point = (mouse.column, mouse.row).into();
-                    if self.refresh_button.contains(point) {
-                        self.refresh_requested = true;
-                        self.scene_dirty = true;
-                        return;
-                    }
-                    if self.quit_button.contains(point) {
-                        self.should_quit = true;
-                        return;
-                    }
-                    self.dragging = true;
-                    self.last_mouse = Some((mouse.column, mouse.row));
-                    if let Some(index) = ui::thread_at(self, mouse.column, mouse.row)
-                        && self.selected != index
+            Event::Mouse(mouse) => {
+                self.mouse_position = Some((mouse.column, mouse.row));
+                self.hovered_event = ui::event_at(self, mouse.column, mouse.row);
+                match mouse.kind {
+                    MouseEventKind::ScrollUp
+                        if mouse.modifiers.contains(KeyModifiers::CONTROL)
+                            && self.scene_area.contains((mouse.column, mouse.row).into()) =>
                     {
-                        self.selected = index;
+                        self.wheel_zoom(1);
+                    }
+                    MouseEventKind::ScrollDown
+                        if mouse.modifiers.contains(KeyModifiers::CONTROL)
+                            && self.scene_area.contains((mouse.column, mouse.row).into()) =>
+                    {
+                        self.wheel_zoom(-1);
+                    }
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        let point = (mouse.column, mouse.row).into();
+                        if let Some(index) = ui::event_at(self, mouse.column, mouse.row) {
+                            self.selected_event = Some(index);
+                            return;
+                        }
+                        if self.refresh_button.contains(point) {
+                            self.refresh_requested = true;
+                            self.scene_dirty = true;
+                            return;
+                        }
+                        if self.quit_button.contains(point) {
+                            self.should_quit = true;
+                            return;
+                        }
+                        if let Some(index) = ui::thread_at(self, mouse.column, mouse.row)
+                            && self.selected != index
+                        {
+                            self.selected = index;
+                            self.selected_event = None;
+                            self.scene_dirty = true;
+                        }
+                        if !self.scene_area.contains(point) {
+                            return;
+                        }
+                        self.dragging = true;
+                        self.last_mouse = Some((mouse.column, mouse.row));
+                    }
+                    MouseEventKind::Drag(MouseButton::Left) if self.dragging => {
+                        if let Some((column, row)) = self.last_mouse {
+                            self.camera_yaw += (mouse.column as f32 - column as f32) * 0.025;
+                            self.camera_pitch = (self.camera_pitch
+                                + (mouse.row as f32 - row as f32) * 0.015)
+                                .clamp(-0.15, 0.65);
+                        }
+                        self.last_mouse = Some((mouse.column, mouse.row));
                         self.scene_dirty = true;
+                        self.last_camera_input = Some(Instant::now());
                     }
-                }
-                MouseEventKind::Drag(MouseButton::Left) if self.dragging => {
-                    if let Some((column, row)) = self.last_mouse {
-                        self.camera_yaw += (mouse.column as f32 - column as f32) * 0.025;
-                        self.camera_pitch = (self.camera_pitch
-                            + (mouse.row as f32 - row as f32) * 0.015)
-                            .clamp(-0.15, 0.65);
+                    MouseEventKind::Up(MouseButton::Left) if self.dragging => {
+                        self.dragging = false;
+                        self.last_mouse = None;
+                        self.scene_dirty = true;
+                        self.last_camera_input = Some(Instant::now() - Duration::from_millis(200));
                     }
-                    self.last_mouse = Some((mouse.column, mouse.row));
-                    self.scene_dirty = true;
-                    self.last_camera_input = Some(Instant::now());
+                    _ => {}
                 }
-                MouseEventKind::Up(MouseButton::Left) => {
-                    self.dragging = false;
-                    self.last_mouse = None;
-                    self.scene_dirty = true;
-                    self.last_camera_input = Some(Instant::now() - Duration::from_millis(200));
-                }
-                _ => {}
-            },
+            }
             Event::Resize(_, _) => self.scene_dirty = true,
             _ => {}
         }
+    }
+
+    fn update_pointer_shape(&mut self) -> Result<()> {
+        let Some((column, row)) = self.mouse_position else {
+            return Ok(());
+        };
+        let point = (column, row).into();
+        let desired = if self.dragging {
+            "grabbing"
+        } else if ui::event_at(self, column, row).is_some()
+            || (self.thread_area.contains(point) && ui::thread_at(self, column, row).is_some())
+            || self.refresh_button.contains(point)
+            || self.quit_button.contains(point)
+        {
+            "pointer"
+        } else if self.scene_area.contains(point) {
+            "grab"
+        } else {
+            "default"
+        };
+        if desired != self.pointer_shape {
+            let mut stdout = io::stdout().lock();
+            write!(stdout, "\x1b]22;{desired}\x1b\\")?;
+            stdout.flush()?;
+            self.pointer_shape = desired;
+        }
+        Ok(())
     }
 }
 
@@ -315,11 +371,11 @@ pub fn run(capabilities: Capabilities, profile: RenderingProfile) -> Result<()> 
         if event::poll(wait)? {
             for _ in 0..64 {
                 let event = event::read()?;
+                let previous_hover = dashboard.hovered_event;
                 let affects_ui = !matches!(
                     event,
                     Event::Mouse(crossterm::event::MouseEvent {
-                        kind: MouseEventKind::Moved
-                            | MouseEventKind::ScrollUp
+                        kind: MouseEventKind::ScrollUp
                             | MouseEventKind::ScrollDown
                             | MouseEventKind::Drag(_)
                             | MouseEventKind::Up(_),
@@ -332,7 +388,8 @@ pub fn run(capabilities: Capabilities, profile: RenderingProfile) -> Result<()> 
                     })
                 );
                 dashboard.on_event(event);
-                ui_dirty |= affects_ui;
+                ui_dirty |= affects_ui || previous_hover != dashboard.hovered_event;
+                dashboard.update_pointer_shape()?;
                 if !event::poll(Duration::ZERO)? {
                     break;
                 }
@@ -431,5 +488,6 @@ impl Drop for TerminalGuard {
             LeaveAlternateScreen
         );
         let _ = self.terminal.show_cursor();
+        let _ = write!(self.terminal.backend_mut(), "\x1b]22;\x1b\\");
     }
 }

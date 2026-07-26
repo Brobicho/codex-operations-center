@@ -43,7 +43,7 @@ pub fn draw_scene(dashboard: &Dashboard, preview: bool) -> Result<()> {
         .min(1.0);
     let render_width = (width as f32 * scale).round().max(1.0) as usize;
     let render_height = (height as f32 * scale).round().max(1.0) as usize;
-    let rgba = scene.render_rgba(render_width, render_height);
+    let rgba = scene.render_rgba_for_display(render_width, render_height, width, height);
     if dashboard.capabilities.kitty_graphics {
         draw_kitty(area, render_width, render_height, &rgba)
     } else if dashboard.capabilities.sixel_graphics {

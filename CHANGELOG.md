@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.6 - 2026-07-26
+
+- Keep operators, infrastructure, and labels at a stable visual scale during preview frames.
+- Add hover highlighting, native Kitty pointer shapes, and clickable activity rows.
+- Show exact timestamps, project, tool, full command, and changed files in an activity inspector.
+- Restore the intended RGB interface palette when the parent shell exports `NO_COLOR`.
+
 ## 0.1.5 - 2026-07-26
 
 - Render responsive low-latency previews while dragging and zooming, then sharpen on release.

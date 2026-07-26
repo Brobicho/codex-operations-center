@@ -54,7 +54,12 @@ pub fn draw(frame: &mut Frame<'_>, dashboard: &mut Dashboard) {
         draw_projects(frame, dashboard, left[0]);
         draw_threads(frame, dashboard, left[1]);
         draw_scene(frame, dashboard, body[1]);
-        let right = Layout::vertical([Constraint::Length(18), Constraint::Min(8)]).split(body[2]);
+        let right = if dashboard.selected_event.is_some() {
+            Layout::vertical([Constraint::Percentage(62), Constraint::Percentage(38)])
+                .split(body[2])
+        } else {
+            Layout::vertical([Constraint::Length(18), Constraint::Min(8)]).split(body[2])
+        };
         draw_inspector(frame, dashboard, right[0]);
         draw_events(frame, dashboard, right[1]);
     } else {
@@ -230,6 +235,12 @@ fn draw_projects(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
 }
 
 fn draw_inspector(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
+    if let Some(index) = dashboard.selected_event
+        && let Some(event) = dashboard.events.get(index)
+    {
+        draw_activity_detail(frame, event, area);
+        return;
+    }
     let block = panel("SESSION ACTIVE");
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -294,10 +305,75 @@ fn draw_inspector(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
     );
 }
 
+fn draw_activity_detail(frame: &mut Frame<'_>, event: &crate::events::EventRecord, area: Rect) {
+    let (marker, color) = activity_appearance(event);
+    let block = panel("DÉTAIL ACTIVITÉ").border_style(Style::new().fg(color));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let timestamp = event
+        .received_at
+        .with_timezone(&Local)
+        .format("%d/%m/%Y · %H:%M:%S%.3f")
+        .to_string();
+    let mut content = vec![
+        Line::from(vec![
+            Span::styled(format!(" {marker} "), Style::new().fg(color).bold()),
+            Span::styled(&event.summary, Style::new().fg(color).bold()),
+        ]),
+        section_colored("HEURE EXACTE", VIOLET),
+        Line::from(Span::styled(timestamp, Style::new().fg(CYAN))),
+        section_colored("PROJET", BLUE),
+        Line::from(Span::styled(
+            project_name(&event.cwd),
+            Style::new().fg(GREEN),
+        )),
+        section_colored("OUTIL", MAGENTA),
+        Line::from(Span::styled(
+            event.tool_name.as_deref().unwrap_or("Codex"),
+            Style::new().fg(MAGENTA),
+        )),
+    ];
+    if let Some(command) = event.command_detail() {
+        content.push(section_colored("COMMANDE", AMBER));
+        content.push(Line::from(Span::styled(
+            command,
+            Style::new().fg(Color::Rgb(255, 218, 132)),
+        )));
+    }
+    let files = event.changed_files();
+    if !files.is_empty() {
+        content.push(section_colored("FICHIERS", MAGENTA));
+        content.extend(files.into_iter().take(5).map(|path| {
+            Line::from(Span::styled(
+                format!("• {path}"),
+                Style::new().fg(Color::Rgb(244, 142, 219)),
+            ))
+        }));
+    }
+    content.push(Line::default());
+    content.push(Line::from(Span::styled(
+        "Échap : revenir à la session",
+        Style::new().fg(MUTED),
+    )));
+    frame.render_widget(
+        Paragraph::new(content)
+            .style(Style::new().bg(PANEL))
+            .wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
 fn section(label: &'static str) -> Line<'static> {
     Line::from(Span::styled(
         format!("\n{label}"),
         Style::new().fg(Color::Rgb(73, 105, 148)).bold(),
+    ))
+}
+
+fn section_colored(label: &'static str, color: Color) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("\n{label}"),
+        Style::new().fg(color).bold(),
     ))
 }
 
@@ -315,6 +391,12 @@ fn draw_threads(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
         .take(capacity)
         .map(|(index, thread)| {
             let selected = index == dashboard.selected;
+            let hovered = dashboard.mouse_position.is_some_and(|(column, row)| {
+                dashboard.thread_area.contains((column, row).into())
+                    && thread_list_start(dashboard, capacity)
+                        + ((row - dashboard.thread_area.y) / 3) as usize
+                        == index
+            });
             let status = status(thread);
             let title = thread
                 .name
@@ -334,29 +416,49 @@ fn draw_threads(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
                 )),
                 Line::default(),
             ])
+            .style(Style::new().bg(if hovered {
+                Color::Rgb(13, 42, 66)
+            } else {
+                PANEL
+            }))
         })
         .collect::<Vec<_>>();
     frame.render_widget(List::new(items).style(Style::new().bg(PANEL)), inner);
 }
 
-fn draw_events(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
+fn draw_events(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
     let block = panel("JOURNAL D’ACTIVITÉ");
     let inner = block.inner(area);
+    dashboard.event_area = inner;
     frame.render_widget(block, area);
     let lines = dashboard
         .events
         .iter()
         .rev()
-        .take(inner.height as usize / 2)
-        .map(|event| {
+        .take(inner.height as usize)
+        .enumerate()
+        .map(|(offset, event)| {
+            let index = dashboard.events.len() - 1 - offset;
             let time = event.received_at.with_timezone(&Local).format("%H:%M:%S");
             let (marker, color) = activity_appearance(event);
+            let hovered = dashboard.hovered_event == Some(index);
+            let selected = dashboard.selected_event == Some(index);
+            let row_style = Style::new().fg(color).bg(if selected {
+                Color::Rgb(39, 28, 67)
+            } else if hovered {
+                Color::Rgb(13, 42, 66)
+            } else {
+                PANEL
+            });
             Line::from(vec![
-                Span::styled(format!(" {time} "), Style::new().fg(MUTED)),
-                Span::styled(format!("{marker} "), Style::new().fg(color).bold()),
+                Span::styled(
+                    format!("{} {time} ", if hovered { "▶" } else { " " }),
+                    row_style.fg(if hovered { CYAN } else { MUTED }),
+                ),
+                Span::styled(format!("{marker} "), row_style.bold()),
                 Span::styled(
                     truncate(&event.summary, inner.width.saturating_sub(13) as usize),
-                    Style::new().fg(color),
+                    row_style,
                 ),
             ])
         })
@@ -369,7 +471,12 @@ fn draw_events(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
     } else {
         lines
     };
-    frame.render_widget(Paragraph::new(content).wrap(Wrap { trim: true }), inner);
+    frame.render_widget(
+        Paragraph::new(content)
+            .style(Style::new().bg(PANEL))
+            .wrap(Wrap { trim: true }),
+        inner,
+    );
 }
 
 fn activity_appearance(event: &crate::events::EventRecord) -> (&'static str, Color) {
@@ -402,6 +509,11 @@ fn draw_footer(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
     .split(area);
     dashboard.refresh_button = columns[1];
     dashboard.quit_button = columns[2];
+    let hover_hint = if dashboard.hovered_event.is_some() {
+        "  CLIQUER : ouvrir le détail"
+    } else {
+        ""
+    };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" CLIC/↑↓ ", Style::new().fg(BG).bg(CYAN).bold()),
@@ -417,6 +529,7 @@ fn draw_footer(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
                 Style::new().fg(Color::Rgb(54, 82, 116)),
             ),
             Span::styled(format!("  {status}"), Style::new().fg(RED)),
+            Span::styled(hover_hint, Style::new().fg(AMBER).bold()),
         ]))
         .style(Style::new().bg(BG)),
         columns[0],
@@ -424,7 +537,18 @@ fn draw_footer(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
     frame.render_widget(
         Paragraph::new("↻ ACTUALISER")
             .alignment(Alignment::Center)
-            .style(Style::new().fg(CYAN).bg(Color::Rgb(9, 32, 54)))
+            .style(
+                Style::new().fg(CYAN).bg(
+                    if dashboard
+                        .mouse_position
+                        .is_some_and(|point| columns[1].contains(point.into()))
+                    {
+                        Color::Rgb(15, 61, 84)
+                    } else {
+                        Color::Rgb(9, 32, 54)
+                    },
+                ),
+            )
             .block(
                 Block::new()
                     .borders(Borders::ALL)
@@ -435,7 +559,18 @@ fn draw_footer(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
     frame.render_widget(
         Paragraph::new("QUITTER")
             .alignment(Alignment::Center)
-            .style(Style::new().fg(Color::White).bg(Color::Rgb(42, 15, 29)))
+            .style(
+                Style::new().fg(Color::White).bg(
+                    if dashboard
+                        .mouse_position
+                        .is_some_and(|point| columns[2].contains(point.into()))
+                    {
+                        Color::Rgb(82, 24, 45)
+                    } else {
+                        Color::Rgb(42, 15, 29)
+                    },
+                ),
+            )
             .block(
                 Block::new()
                     .borders(Borders::ALL)
@@ -475,6 +610,14 @@ pub fn thread_at(dashboard: &Dashboard, column: u16, row: u16) -> Option<usize> 
         return (index < dashboard.threads.len()).then_some(index);
     }
     None
+}
+
+pub fn event_at(dashboard: &Dashboard, column: u16, row: u16) -> Option<usize> {
+    if !dashboard.event_area.contains((column, row).into()) {
+        return None;
+    }
+    let offset = (row - dashboard.event_area.y) as usize;
+    dashboard.events.len().checked_sub(offset + 1)
 }
 
 fn thread_list_start(dashboard: &Dashboard, capacity: usize) -> usize {
@@ -591,6 +734,7 @@ mod tests {
             thread_area: Rect::default(),
             refresh_button: Rect::default(),
             quit_button: Rect::default(),
+            event_area: Rect::default(),
             should_quit: false,
             dragging: false,
             last_mouse: None,
@@ -602,6 +746,10 @@ mod tests {
             scene_refresh_pending: false,
             refresh_requested: false,
             final_frame_pending: false,
+            hovered_event: None,
+            selected_event: None,
+            mouse_position: None,
+            pointer_shape: "default",
         };
         let backend = TestBackend::new(180, 52);
         let mut terminal = Terminal::new(backend).unwrap();

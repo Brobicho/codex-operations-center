@@ -182,7 +182,7 @@ fn read_activity(
         else {
             continue;
         };
-        let Some((event, tool_name, summary)) = activity_summary(&value) else {
+        let Some((event, tool_name, summary, payload)) = activity_summary(&value) else {
             continue;
         };
         events.push(EventRecord {
@@ -198,7 +198,7 @@ fn read_activity(
             event,
             tool_name,
             summary,
-            payload: Value::Null,
+            payload,
         });
     }
     if events.len() > limit {
@@ -207,7 +207,7 @@ fn read_activity(
     Ok(events)
 }
 
-fn activity_summary(value: &Value) -> Option<(String, Option<String>, String)> {
+fn activity_summary(value: &Value) -> Option<(String, Option<String>, String, Value)> {
     match value.get("type").and_then(Value::as_str)? {
         "event_msg" => match value.pointer("/payload/type").and_then(Value::as_str)? {
             "task_started" => owned_activity("TaskStarted", None, "Commence une nouvelle tâche"),
@@ -217,11 +217,13 @@ fn activity_summary(value: &Value) -> Option<(String, Option<String>, String)> {
                 "PatchApplied".to_owned(),
                 Some("apply_patch".to_owned()),
                 changed_files_summary(value),
+                serde_json::json!({ "files": changed_files(value) }),
             )),
             "context_compacted" => Some((
                 "ContextCompacted".to_owned(),
                 None,
                 "Optimise son contexte de travail".to_owned(),
+                Value::Null,
             )),
             _ => None,
         },
@@ -230,9 +232,11 @@ fn activity_summary(value: &Value) -> Option<(String, Option<String>, String)> {
                 == Some("custom_tool_call") =>
         {
             let tool = value.pointer("/payload/name").and_then(Value::as_str)?;
+            let command = custom_call_command(value);
             let summary = match tool {
-                "exec" | "exec_command" => custom_call_command(value)
-                    .map(|command| summarize_command(&command))
+                "exec" | "exec_command" => command
+                    .as_deref()
+                    .map(summarize_command)
                     .unwrap_or_else(|| "Lance un script shell".to_owned()),
                 "apply_patch" => "Prépare une modification de fichiers".to_owned(),
                 "imagegen" | "image_gen" => "Crée un élément visuel".to_owned(),
@@ -240,7 +244,15 @@ fn activity_summary(value: &Value) -> Option<(String, Option<String>, String)> {
                 _ if tool.starts_with("mcp__") => "Consulte un service connecté".to_owned(),
                 _ => return None,
             };
-            Some(("ToolStarted".to_owned(), Some(tool.to_owned()), summary))
+            let payload = command
+                .map(|command| serde_json::json!({ "command": command }))
+                .unwrap_or(Value::Null);
+            Some((
+                "ToolStarted".to_owned(),
+                Some(tool.to_owned()),
+                summary,
+                payload,
+            ))
         }
         _ => None,
     }
@@ -250,20 +262,30 @@ fn owned_activity(
     event: &str,
     tool: Option<&str>,
     summary: &str,
-) -> Option<(String, Option<String>, String)> {
+) -> Option<(String, Option<String>, String, Value)> {
     Some((
         event.to_owned(),
         tool.map(ToOwned::to_owned),
         summary.to_owned(),
+        Value::Null,
     ))
 }
 
+fn changed_files(value: &Value) -> Vec<String> {
+    let mut files = value
+        .pointer("/payload/changes")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|changes| changes.keys().cloned())
+        .collect::<Vec<_>>();
+    files.sort();
+    files.dedup();
+    files
+}
+
 fn changed_files_summary(value: &Value) -> String {
-    let Some(changes) = value.pointer("/payload/changes").and_then(Value::as_object) else {
-        return "Modifie des fichiers".to_owned();
-    };
-    let mut files = changes
-        .keys()
+    let mut files = changed_files(value)
+        .iter()
         .filter_map(|path| Path::new(path).file_name()?.to_str().map(ToOwned::to_owned))
         .collect::<Vec<_>>();
     files.sort();
@@ -484,9 +506,14 @@ mod tests {
                 "input": "const r = await tools.exec_command({\"cmd\":\"cargo test --locked\",\"workdir\":\"/work/project\"});"
             }
         });
+        let command_activity = activity_summary(&command).unwrap();
+        assert_eq!(command_activity.2, "Commande · cargo test --locked");
         assert_eq!(
-            activity_summary(&command).unwrap().2,
-            "Commande · cargo test --locked"
+            command_activity
+                .3
+                .pointer("/command")
+                .and_then(Value::as_str),
+            Some("cargo test --locked")
         );
 
         let patch = serde_json::json!({
@@ -499,6 +526,11 @@ mod tests {
                 }
             }
         });
-        assert_eq!(activity_summary(&patch).unwrap().2, "Modifie app.rs, ui.rs");
+        let patch_activity = activity_summary(&patch).unwrap();
+        assert_eq!(patch_activity.2, "Modifie app.rs, ui.rs");
+        assert_eq!(
+            patch_activity.3.pointer("/files/0").and_then(Value::as_str),
+            Some("/work/project/src/app.rs")
+        );
     }
 }
