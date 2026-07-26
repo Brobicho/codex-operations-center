@@ -125,6 +125,8 @@ fn launch_hd_terminal() -> Result<bool> {
         .arg(executable)
         .args(["--graphics", "ultra"])
         .env("CODEX_OPS_HD_CHILD", "1")
+        .env_remove("NO_COLOR")
+        .env("COLORTERM", "truecolor")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -53,6 +53,24 @@ impl EventRecord {
             payload,
         })
     }
+
+    pub fn command_detail(&self) -> Option<&str> {
+        self.payload
+            .get("command")
+            .or_else(|| self.payload.pointer("/tool_input/command"))
+            .or_else(|| self.payload.pointer("/tool_input/cmd"))
+            .and_then(Value::as_str)
+    }
+
+    pub fn changed_files(&self) -> Vec<&str> {
+        self.payload
+            .get("files")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect()
+    }
 }
 
 pub fn ingest_stdin() -> Result<()> {

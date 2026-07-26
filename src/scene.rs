@@ -157,7 +157,20 @@ impl Scene {
     }
 
     pub fn render_rgba(&self, width: usize, height: usize) -> Vec<u8> {
-        let mut canvas = Canvas::with_background(width, height);
+        self.render_rgba_for_display(width, height, width, height)
+    }
+
+    pub fn render_rgba_for_display(
+        &self,
+        width: usize,
+        height: usize,
+        display_width: usize,
+        display_height: usize,
+    ) -> Vec<u8> {
+        let display_scale = (display_width as f32 / width.max(1) as f32)
+            .min(display_height as f32 / height.max(1) as f32)
+            .max(1.0);
+        let mut canvas = Canvas::with_background(width, height, display_scale);
         if width == 0 || height == 0 {
             return canvas.pixels;
         }
@@ -203,7 +216,7 @@ impl Scene {
         let back = center + Vec2::new(0.0, -half_h);
         let right = center + Vec2::new(half_w, 0.0);
         let front = center + Vec2::new(0.0, half_h);
-        let wall = (canvas.height as f32 * 0.075).max(6.0);
+        let wall = (canvas.height as f32 * 0.075).max(canvas.logical(6.0));
         let floor = Vec3::new(0.025, 0.055, 0.105) + room.color * 0.075;
 
         if canvas.width >= 320 {
@@ -259,7 +272,8 @@ impl Scene {
 
     fn draw_workstation(&self, canvas: &mut Canvas, node: &SceneNode) {
         let center = canvas.point(self.view_point(node.position.truncate()));
-        let scale = (canvas.width.min(canvas.height * 2) as f32 / 185.0).clamp(0.45, 4.5);
+        let scale = (canvas.width.min(canvas.height * 2) as f32 / 185.0)
+            .clamp(canvas.logical(0.45), canvas.logical(4.5));
         let selected = node.thread_index == self.selected;
         let pulse = (self.time * 3.2).sin() * 0.5 + 0.5;
 
@@ -282,7 +296,8 @@ impl Scene {
         }
 
         if canvas.width >= 320 {
-            let target_width = (canvas.width as f32 * 0.17).clamp(96.0, 260.0);
+            let target_width =
+                (canvas.width as f32 * 0.17).clamp(canvas.logical(96.0), canvas.logical(260.0));
             canvas.sprite(
                 workstation_sprite(),
                 center + Vec2::new(0.0, 13.0 * scale),
@@ -366,7 +381,8 @@ impl Scene {
     }
 
     fn draw_plant(&self, canvas: &mut Canvas, center: Vec2, color: Vec3) {
-        let scale = (canvas.width.min(canvas.height * 2) as f32 / 220.0).clamp(0.4, 3.0);
+        let scale = (canvas.width.min(canvas.height * 2) as f32 / 220.0)
+            .clamp(canvas.logical(0.4), canvas.logical(3.0));
         canvas.iso_box(
             center,
             5.0 * scale,
@@ -394,12 +410,13 @@ impl Scene {
             return;
         }
         let center = canvas.point(self.view_point(Vec2::new(0.50, 0.82)));
-        let scale = (canvas.width.min(canvas.height * 2) as f32 / 210.0).clamp(0.4, 3.0);
+        let scale = (canvas.width.min(canvas.height * 2) as f32 / 210.0)
+            .clamp(canvas.logical(0.4), canvas.logical(3.0));
         if canvas.width >= 320 {
             canvas.sprite(
                 server_cluster_sprite(),
                 center + Vec2::Y * 24.0 * scale,
-                (canvas.width as f32 * 0.16).clamp(110.0, 240.0),
+                (canvas.width as f32 * 0.16).clamp(canvas.logical(110.0), canvas.logical(240.0)),
             );
             return;
         }
@@ -444,14 +461,16 @@ impl Scene {
     }
 
     fn draw_raster_labels(&self, canvas: &mut Canvas) {
-        let room_size = (canvas.width as f32 / 62.0).clamp(13.0, 22.0);
-        let agent_size = (canvas.width as f32 / 78.0).clamp(11.0, 17.0);
+        let room_size =
+            (canvas.width as f32 / 62.0).clamp(canvas.logical(13.0), canvas.logical(22.0));
+        let agent_size =
+            (canvas.width as f32 / 78.0).clamp(canvas.logical(11.0), canvas.logical(17.0));
         for room in &self.rooms {
             let center = canvas.point(self.view_point(room.center));
             let y =
                 center.y - room.half_height * self.zoom * canvas.height as f32 - room_size * 3.2;
             canvas.label(
-                Vec2::new(center.x, y.max(8.0)),
+                Vec2::new(center.x, y.max(canvas.logical(8.0))),
                 &room.label,
                 room.color,
                 room_size,
@@ -548,23 +567,25 @@ struct Canvas {
     width: usize,
     height: usize,
     pixels: Vec<u8>,
+    display_scale: f32,
 }
 
 type BackgroundFrame = (usize, usize, Vec<u8>);
 
 impl Canvas {
-    fn new(width: usize, height: usize) -> Self {
+    fn new(width: usize, height: usize, display_scale: f32) -> Self {
         Self {
             width,
             height,
             pixels: vec![0; width * height * 4],
+            display_scale,
         }
     }
 
-    fn with_background(width: usize, height: usize) -> Self {
+    fn with_background(width: usize, height: usize, display_scale: f32) -> Self {
         static BACKGROUNDS: OnceLock<Mutex<Vec<BackgroundFrame>>> = OnceLock::new();
         if width == 0 || height == 0 {
-            return Self::new(width, height);
+            return Self::new(width, height, display_scale);
         }
         let cache = BACKGROUNDS.get_or_init(|| Mutex::new(Vec::new()));
         if let Ok(cached) = cache.lock()
@@ -576,9 +597,10 @@ impl Canvas {
                 width,
                 height,
                 pixels: pixels.clone(),
+                display_scale,
             };
         }
-        let mut canvas = Self::new(width, height);
+        let mut canvas = Self::new(width, height, display_scale);
         canvas.background();
         canvas.technical_grid();
         if let Ok(mut cached) = cache.lock() {
@@ -588,6 +610,10 @@ impl Canvas {
             cached.push((width, height, canvas.pixels.clone()));
         }
         canvas
+    }
+
+    fn logical(&self, value: f32) -> f32 {
+        value / self.display_scale
     }
 
     fn point(&self, point: Vec2) -> Vec2 {
