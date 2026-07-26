@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use glam::{Vec2, Vec3};
 use ratatui::buffer::Buffer;
@@ -60,15 +60,18 @@ impl Scene {
         time: f32,
         selected: usize,
     ) -> Self {
-        let mut projects = BTreeMap::<String, Vec<(usize, &ThreadSummary)>>::new();
+        let mut projects = Vec::<(String, Vec<(usize, &ThreadSummary)>)>::new();
         for (index, thread) in threads.iter().enumerate() {
-            projects
-                .entry(thread.cwd.clone())
-                .or_default()
-                .push((index, thread));
+            if let Some((_, project_threads)) =
+                projects.iter_mut().find(|(cwd, _)| cwd == &thread.cwd)
+            {
+                project_threads.push((index, thread));
+            } else {
+                projects.push((thread.cwd.clone(), vec![(index, thread)]));
+            }
         }
 
-        let visible = projects.into_iter().take(4).collect::<Vec<_>>();
+        let visible = projects.into_iter().take(3).collect::<Vec<_>>();
         let room_layout = room_layout(visible.len());
         let mut rooms = Vec::new();
         let mut nodes = Vec::new();
@@ -84,8 +87,8 @@ impl Scene {
                 color,
             });
 
-            let slots = agent_slots(project_threads.len().min(4));
-            for ((thread_index, thread), slot) in project_threads.into_iter().take(4).zip(slots) {
+            let slots = agent_slots(project_threads.len().min(2));
+            for ((thread_index, thread), slot) in project_threads.into_iter().take(2).zip(slots) {
                 let active = matches!(
                     thread.status,
                     ThreadStatus::Active { .. } | ThreadStatus::ObservedRunning
@@ -189,6 +192,17 @@ impl Scene {
         let wall = (canvas.height as f32 * 0.075).max(6.0);
         let floor = Vec3::new(0.025, 0.055, 0.105) + room.color * 0.075;
 
+        if canvas.width >= 320 {
+            canvas.sprite(
+                project_room_sprite(),
+                center + Vec2::Y * half_h * 1.08,
+                half_w * 1.72,
+            );
+            canvas.glow_line(left, front, room.color, 2);
+            canvas.glow_line(front, right, room.color, 2);
+            return;
+        }
+
         canvas.polygon(&[left, back, right, front], floor);
         canvas.polygon(
             &[left, back, back - Vec2::Y * wall, left - Vec2::Y * wall],
@@ -251,6 +265,23 @@ impl Scene {
                 ],
                 Vec3::new(1.0, 0.73, 0.24),
             );
+        }
+
+        if canvas.width >= 320 {
+            let target_width = (canvas.width as f32 * 0.17).clamp(96.0, 260.0);
+            canvas.sprite(
+                workstation_sprite(),
+                center + Vec2::new(0.0, 13.0 * scale),
+                target_width,
+            );
+            let beacon = center + Vec2::new(-target_width * 0.22, -target_width * 0.34);
+            canvas.glow_circle(beacon, 3.0 * scale + pulse, node.color);
+            canvas.circle(beacon, 1.5 * scale, node.color);
+            if node.attention {
+                let warning = center + Vec2::new(target_width * 0.34, -target_width * 0.42);
+                canvas.glow_circle(warning, 5.0 * scale, node.color);
+            }
+            return;
         }
 
         // Desk as a small isometric cuboid.
@@ -350,6 +381,14 @@ impl Scene {
         }
         let center = canvas.point(self.view_point(Vec2::new(0.50, 0.82)));
         let scale = (canvas.width.min(canvas.height * 2) as f32 / 210.0).clamp(0.4, 3.0);
+        if canvas.width >= 320 {
+            canvas.sprite(
+                server_cluster_sprite(),
+                center + Vec2::Y * 24.0 * scale,
+                (canvas.width as f32 * 0.16).clamp(110.0, 240.0),
+            );
+            return;
+        }
         for rack in -1..=1 {
             let position = center + Vec2::new(rack as f32 * 13.0 * scale, 0.0);
             canvas.iso_box(
@@ -684,6 +723,103 @@ impl Canvas {
             ],
             color * 0.48,
         );
+    }
+
+    fn sprite(&mut self, sprite: &Sprite, ground: Vec2, target_width: f32) {
+        let target_width = target_width.max(1.0) as usize;
+        let target_height =
+            ((target_width as f32 * sprite.height as f32 / sprite.width as f32).max(1.0)) as usize;
+        let left = ground.x.round() as isize - target_width as isize / 2;
+        let top = ground.y.round() as isize - (target_height as f32 * 0.88) as isize;
+        for y in 0..target_height {
+            let source_y = y * sprite.height / target_height;
+            for x in 0..target_width {
+                let source_x = x * sprite.width / target_width;
+                let offset = (source_y * sprite.width + source_x) * 4;
+                let alpha = sprite.rgba[offset + 3] as f32 / 255.0;
+                if alpha <= 0.01 {
+                    continue;
+                }
+                self.set(
+                    left + x as isize,
+                    top + y as isize,
+                    Vec3::new(
+                        sprite.rgba[offset] as f32 / 255.0,
+                        sprite.rgba[offset + 1] as f32 / 255.0,
+                        sprite.rgba[offset + 2] as f32 / 255.0,
+                    ),
+                    alpha,
+                );
+            }
+        }
+    }
+}
+
+struct Sprite {
+    width: usize,
+    height: usize,
+    rgba: Vec<u8>,
+}
+
+fn workstation_sprite() -> &'static Sprite {
+    static SPRITE: OnceLock<Sprite> = OnceLock::new();
+    SPRITE.get_or_init(|| {
+        decode_sprite(
+            include_bytes!("../assets/generated/workstation-operator.png"),
+            "workstation",
+        )
+    })
+}
+
+fn project_room_sprite() -> &'static Sprite {
+    static SPRITE: OnceLock<Sprite> = OnceLock::new();
+    SPRITE.get_or_init(|| {
+        decode_sprite(
+            include_bytes!("../assets/generated/project-room.png"),
+            "project room",
+        )
+    })
+}
+
+fn server_cluster_sprite() -> &'static Sprite {
+    static SPRITE: OnceLock<Sprite> = OnceLock::new();
+    SPRITE.get_or_init(|| {
+        decode_sprite(
+            include_bytes!("../assets/generated/server-cluster.png"),
+            "server cluster",
+        )
+    })
+}
+
+fn decode_sprite(bytes: &[u8], name: &str) -> Sprite {
+    let image = image::load_from_memory(bytes)
+        .unwrap_or_else(|_| panic!("embedded {name} sprite must be a valid PNG"))
+        .to_rgba8();
+    let (width, height) = image.dimensions();
+    let mut min_x = width;
+    let mut min_y = height;
+    let mut max_x = 0;
+    let mut max_y = 0;
+    for (x, y, pixel) in image.enumerate_pixels() {
+        if pixel[3] > 8 {
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+    let cropped = image::imageops::crop_imm(
+        &image,
+        min_x,
+        min_y,
+        max_x.saturating_sub(min_x) + 1,
+        max_y.saturating_sub(min_y) + 1,
+    )
+    .to_image();
+    Sprite {
+        width: cropped.width() as usize,
+        height: cropped.height() as usize,
+        rgba: cropped.into_raw(),
     }
 }
 
