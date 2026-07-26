@@ -12,8 +12,9 @@ const IMAGE_ID: u32 = 7_140_289;
 
 pub fn draw_scene(dashboard: &Dashboard) -> Result<()> {
     let area = dashboard.scene_area;
-    let width = area.width as usize * 6;
-    let height = area.height as usize * 12;
+    let (cell_width, cell_height) = terminal_cell_size();
+    let width = area.width as usize * cell_width;
+    let height = area.height as usize * cell_height;
     if width == 0 || height == 0 {
         return Ok(());
     }
@@ -24,9 +25,20 @@ pub fn draw_scene(dashboard: &Dashboard) -> Result<()> {
         dashboard.camera_pitch,
         dashboard.camera_zoom,
         dashboard.started_at.elapsed().as_secs_f32(),
+        dashboard.selected,
     );
     let rgba = scene.render_rgba(width, height);
-    let png = encode_png(width as u32, height as u32, &rgba)?;
+    if dashboard.capabilities.kitty_graphics {
+        draw_kitty(area, width, height, &rgba)
+    } else if dashboard.capabilities.sixel_graphics {
+        draw_sixel(area, width, height, rgba)
+    } else {
+        Ok(())
+    }
+}
+
+fn draw_kitty(area: ratatui::layout::Rect, width: usize, height: usize, rgba: &[u8]) -> Result<()> {
+    let png = encode_png(width as u32, height as u32, rgba)?;
     let encoded = STANDARD.encode(png);
     let mut stdout = io::stdout().lock();
     write!(stdout, "\x1b7\x1b[{};{}H", area.y + 1, area.x + 1)?;
@@ -35,7 +47,7 @@ pub fn draw_scene(dashboard: &Dashboard) -> Result<()> {
         if index == 0 {
             write!(
                 stdout,
-                "\x1b_Ga=T,f=100,i={IMAGE_ID},c={},r={},z=1,C=1,m={more};",
+                "\x1b_Ga=T,f=100,i={IMAGE_ID},c={},r={},z=-1,C=1,m={more};",
                 area.width, area.height
             )?;
         } else {
@@ -49,6 +61,37 @@ pub fn draw_scene(dashboard: &Dashboard) -> Result<()> {
     Ok(())
 }
 
+fn draw_sixel(
+    area: ratatui::layout::Rect,
+    width: usize,
+    height: usize,
+    rgba: Vec<u8>,
+) -> Result<()> {
+    let sixel = icy_sixel::SixelImage::try_from_rgba(rgba, width, height)?.encode()?;
+    let mut stdout = io::stdout().lock();
+    write!(
+        stdout,
+        "\x1b7\x1b[{};{}H{sixel}\x1b8",
+        area.y + 1,
+        area.x + 1
+    )?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn terminal_cell_size() -> (usize, usize) {
+    crossterm::terminal::window_size()
+        .ok()
+        .filter(|size| size.columns > 0 && size.rows > 0)
+        .map(|size| {
+            (
+                (size.width / size.columns).max(1) as usize,
+                (size.height / size.rows).max(1) as usize,
+            )
+        })
+        .unwrap_or((8, 16))
+}
+
 pub fn delete_scene() -> Result<()> {
     let mut stdout = io::stdout().lock();
     write!(stdout, "\x1b_Ga=d,d=i,i={IMAGE_ID};\x1b\\")?;
@@ -58,7 +101,7 @@ pub fn delete_scene() -> Result<()> {
 
 pub fn save_snapshot(path: &Path, width: u32, height: u32) -> Result<()> {
     let threads = crate::codex::list_threads(36).unwrap_or_default();
-    let scene = Scene::from_threads(&threads, 0.42, 0.22, 1.0, 12.0);
+    let scene = Scene::from_threads(&threads, 0.42, 0.22, 1.0, 12.0, 0);
     let rgba = scene.render_rgba(width as usize, height as usize);
     std::fs::write(path, encode_png(width, height, &rgba)?)?;
     println!("3D operations scene written to {}", path.display());

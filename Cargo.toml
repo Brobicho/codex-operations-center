@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 description = "A real-time, interactive operations center for Codex sessions"
 repository = "https://github.com/Brobicho/codex-operations-center"
-rust-version = "1.88"
+rust-version = "1.90"
 
 [[bin]]
 name = "codex-ops"
@@ -21,6 +21,7 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 directories = "6.0"
 fs2 = "0.4"
 glam = "0.30"
+icy_sixel = "0.5"
 png = "0.18"
 ratatui = "0.30"
 serde = { version = "1.0", features = ["derive"] }

@@ -2,7 +2,7 @@
 
 An open-source, real-time operations center for Codex sessions across local projects.
 
-The project combines truthful Codex lifecycle observability with an interactive terminal interface inspired by strategy and operations software. It does not invent agent personalities, progress percentages, or performance scores.
+The project combines truthful Codex lifecycle observability with a live isometric operations complex: projects become rooms, sessions become operators at real workstations, and the selected session opens a detailed inspector. It does not invent agent personalities, progress percentages, or performance scores.
 
 ![3D operations scene](docs/assets/operations-scene.png)
 
@@ -52,7 +52,7 @@ codex-ops uninstall --purge
 
 | Profile | Rendering | Intended environment |
 | --- | --- | --- |
-| Ultra | Off-screen 3D rasterization via the Kitty graphics protocol | Kitty, Ghostty, WezTerm, Konsole, and compatible terminals |
+| Ultra | High-resolution isometric rasterization via Kitty Graphics or Sixel | Kitty, Ghostty, WezTerm, Konsole, Windows Terminal, Contour, foot, and compatible terminals |
 | Unicode | True Color half-block software rendering | Modern terminals, tmux, and SSH |
 | Safe | Accessible text-first control center | Minimal or unknown terminals |
 
@@ -90,7 +90,7 @@ The integration writes its state beneath `~/.local/share/codex-ops` on Linux and
 | Input | Action |
 | --- | --- |
 | Click a node or session | Select the corresponding Codex thread |
-| Drag the scene or use Left/Right | Orbit the camera |
+| Drag the scene or use Left/Right | Move the view |
 | Mouse wheel or `+`/`-` | Zoom |
 | Up/Down or `j`/`k` | Move through sessions |
 | `r` | Refresh immediately |
@@ -111,7 +111,7 @@ operations UI     software 3D scene
       │                │
       └──────┬─────────┘
              ▼
- Kitty pixels / Unicode half-blocks / safe text
+ Kitty pixels / Sixel / Unicode half-blocks / safe text
 ```
 
 The visual state is derived only from observed Codex information. Colors distinguish projects and actual states; they do not represent invented skill or performance scores.
@@ -130,7 +130,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for isolated integration testing.
 
 ## Status
 
-The initial public release includes local thread discovery, event normalization, terminal capability detection, reversible global-hook installation, mouse interaction, a software 3D renderer, Kitty pixel output, True Color Unicode fallback, PNG snapshots, and release automation.
+The initial public release includes local thread discovery, event normalization, terminal capability detection, reversible global-hook installation, mouse interaction, a software isometric renderer, Kitty and Sixel pixel output, True Color Unicode fallback, PNG snapshots, and release automation.
 
 ## License
 

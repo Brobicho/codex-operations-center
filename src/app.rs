@@ -200,7 +200,12 @@ pub fn run(capabilities: Capabilities, profile: RenderingProfile) -> Result<()> 
             .draw(|frame| ui::draw(frame, &mut dashboard))?;
         if dashboard.profile == RenderingProfile::Ultra
             && !dashboard.scene_area.is_empty()
-            && dashboard.last_ultra_frame.elapsed() >= Duration::from_millis(160)
+            && dashboard.last_ultra_frame.elapsed()
+                >= if dashboard.capabilities.sixel_graphics {
+                    Duration::from_millis(450)
+                } else {
+                    Duration::from_millis(160)
+                }
         {
             kitty::draw_scene(&dashboard)?;
             dashboard.last_ultra_frame = Instant::now();

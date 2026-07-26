@@ -23,9 +23,9 @@ const RED: Color = Color::Rgb(255, 83, 104);
 pub fn draw(frame: &mut Frame<'_>, dashboard: &mut Dashboard) {
     let area = frame.area();
     frame.render_widget(Block::new().style(Style::new().bg(BG)), area);
-    if area.width < 82 || area.height < 24 {
+    if area.width < 96 || area.height < 28 {
         frame.render_widget(
-            Paragraph::new("Agrandissez le terminal à au moins 82 × 24.")
+            Paragraph::new("Agrandissez le terminal à au moins 96 × 28.")
                 .alignment(Alignment::Center)
                 .style(Style::new().fg(AMBER).bg(BG)),
             area,
@@ -36,18 +36,34 @@ pub fn draw(frame: &mut Frame<'_>, dashboard: &mut Dashboard) {
     let vertical = Layout::vertical([
         Constraint::Length(4),
         Constraint::Min(12),
-        Constraint::Length(8),
         Constraint::Length(3),
     ])
     .split(area);
     draw_header(frame, dashboard, vertical[0]);
-
-    let body = Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)])
+    if area.width >= 132 {
+        let body = Layout::horizontal([
+            Constraint::Percentage(21),
+            Constraint::Percentage(57),
+            Constraint::Percentage(22),
+        ])
         .split(vertical[1]);
-    draw_scene(frame, dashboard, body[0]);
-    draw_threads(frame, dashboard, body[1]);
-    draw_events(frame, dashboard, vertical[2]);
-    draw_footer(frame, dashboard, vertical[3]);
+        let left = Layout::vertical([Constraint::Length(13), Constraint::Min(10)]).split(body[0]);
+        draw_projects(frame, dashboard, left[0]);
+        draw_threads(frame, dashboard, left[1]);
+        draw_scene(frame, dashboard, body[1]);
+        let right = Layout::vertical([Constraint::Length(18), Constraint::Min(8)]).split(body[2]);
+        draw_inspector(frame, dashboard, right[0]);
+        draw_events(frame, dashboard, right[1]);
+    } else {
+        let body = Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)])
+            .split(vertical[1]);
+        draw_scene(frame, dashboard, body[0]);
+        let right = Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)])
+            .split(body[1]);
+        draw_threads(frame, dashboard, right[0]);
+        draw_inspector(frame, dashboard, right[1]);
+    }
+    draw_footer(frame, dashboard, vertical[2]);
 }
 
 fn draw_header(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
@@ -117,7 +133,7 @@ fn draw_header(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
 }
 
 fn draw_scene(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
-    let block = panel("CARTE DES OPÉRATIONS");
+    let block = panel("COMPLEXE D’OPÉRATIONS");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     dashboard.scene_area = inner;
@@ -128,6 +144,7 @@ fn draw_scene(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
         dashboard.camera_pitch,
         dashboard.camera_zoom,
         dashboard.started_at.elapsed().as_secs_f32(),
+        dashboard.selected,
     );
     match dashboard.profile {
         RenderingProfile::Ultra => frame.render_widget(Block::new(), inner),
@@ -157,6 +174,123 @@ fn draw_scene(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
             inner,
         );
     }
+}
+
+fn draw_projects(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
+    let block = panel("ESPACES");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let threads = dashboard.effective_threads();
+    let mut projects = std::collections::BTreeMap::<String, (usize, usize)>::new();
+    for thread in &threads {
+        let entry = projects.entry(project_name(&thread.cwd)).or_default();
+        entry.0 += 1;
+        if matches!(
+            thread.status,
+            ThreadStatus::Active { .. } | ThreadStatus::RecentlyActive
+        ) {
+            entry.1 += 1;
+        }
+    }
+    let mut lines = vec![Line::from(vec![
+        Span::styled(" ● ", Style::new().fg(CYAN)),
+        Span::styled("TOUT LE COMPLEXE", Style::new().fg(Color::White).bold()),
+        Span::styled(format!("  {}", threads.len()), Style::new().fg(MUTED)),
+    ])];
+    for (index, (project, (count, active))) in projects.into_iter().take(4).enumerate() {
+        let color = [
+            CYAN,
+            Color::Rgb(153, 104, 255),
+            AMBER,
+            Color::Rgb(75, 226, 164),
+        ][index % 4];
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::styled(" ◆ ", Style::new().fg(color)),
+            Span::styled(
+                truncate(&project, inner.width.saturating_sub(9) as usize),
+                Style::new().fg(Color::White),
+            ),
+            Span::styled(format!(" {count}"), Style::new().fg(MUTED)),
+        ]));
+        lines.push(Line::from(Span::styled(
+            format!("     {active} en activité"),
+            Style::new().fg(if active > 0 { color } else { MUTED }),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines).style(Style::new().bg(PANEL)), inner);
+}
+
+fn draw_inspector(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
+    let block = panel("SESSION ACTIVE");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let threads = dashboard.effective_threads();
+    let Some(thread) = threads.get(dashboard.selected) else {
+        frame.render_widget(
+            Paragraph::new("Sélectionnez une session dans le complexe.")
+                .style(Style::new().fg(MUTED))
+                .wrap(Wrap { trim: true }),
+            inner,
+        );
+        return;
+    };
+    let name = thread
+        .agent_nickname
+        .as_deref()
+        .or(thread.name.as_deref())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Agent Codex");
+    let updated = chrono::DateTime::from_timestamp(thread.updated_at, 0)
+        .map(|date| {
+            date.with_timezone(&Local)
+                .format("%d/%m · %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|| "inconnue".to_owned());
+    let content = vec![
+        Line::from(vec![
+            Span::styled(" ◆ ", Style::new().fg(status_color(thread))),
+            Span::styled(name, Style::new().fg(Color::White).bold()),
+        ]),
+        Line::from(Span::styled(
+            status(thread),
+            Style::new().fg(status_color(thread)).bold(),
+        )),
+        Line::default(),
+        section("PROJET"),
+        Line::from(Span::styled(
+            project_name(&thread.cwd),
+            Style::new().fg(CYAN),
+        )),
+        section("CONTEXTE ACTUEL"),
+        Line::from(Span::styled(
+            truncate(&thread.preview, inner.width as usize * 2),
+            Style::new().fg(Color::White),
+        )),
+        section("MOTEUR"),
+        Line::from(Span::styled(&thread.model_provider, Style::new().fg(MUTED))),
+        section("DERNIÈRE ACTIVITÉ"),
+        Line::from(Span::styled(updated, Style::new().fg(MUTED))),
+        section("DOSSIER"),
+        Line::from(Span::styled(
+            truncate(&thread.cwd, inner.width as usize),
+            Style::new().fg(Color::Rgb(104, 144, 194)),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(content)
+            .style(Style::new().bg(PANEL))
+            .wrap(Wrap { trim: true }),
+        inner,
+    );
+}
+
+fn section(label: &'static str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("\n{label}"),
+        Style::new().fg(Color::Rgb(73, 105, 148)).bold(),
+    ))
 }
 
 fn draw_threads(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
@@ -205,16 +339,15 @@ fn draw_events(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
         .events
         .iter()
         .rev()
-        .take(inner.height as usize)
+        .take(inner.height as usize / 2)
         .map(|event| {
             let time = event.received_at.with_timezone(&Local).format("%H:%M:%S");
             Line::from(vec![
-                Span::styled(format!(" {time}  "), Style::new().fg(MUTED)),
+                Span::styled(format!(" {time} "), Style::new().fg(MUTED)),
                 Span::styled(
-                    format!("{:<16}", project_name(&event.cwd)),
-                    Style::new().fg(BLUE).bold(),
+                    truncate(&event.summary, inner.width.saturating_sub(11) as usize),
+                    Style::new().fg(Color::White),
                 ),
-                Span::styled(&event.summary, Style::new().fg(Color::White)),
             ])
         })
         .collect::<Vec<_>>();
@@ -289,6 +422,7 @@ pub fn thread_at(dashboard: &Dashboard, column: u16, row: u16) -> Option<usize> 
             dashboard.camera_pitch,
             dashboard.camera_zoom,
             dashboard.started_at.elapsed().as_secs_f32(),
+            dashboard.selected,
         );
         let local_x = (column - area.x) as f32;
         let local_y = (row - area.y) as f32 * 2.0;
@@ -386,6 +520,7 @@ mod tests {
                 terminal: "test-terminal".to_owned(),
                 true_color: true,
                 kitty_graphics: false,
+                sixel_graphics: false,
                 mouse: true,
                 tmux: false,
                 ssh: false,
@@ -424,7 +559,7 @@ mod tests {
             status_message: None,
             last_ultra_frame: Instant::now(),
         };
-        let backend = TestBackend::new(120, 40);
+        let backend = TestBackend::new(180, 52);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| draw(frame, &mut dashboard)).unwrap();
 
@@ -436,6 +571,9 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("CODEX"));
+        assert!(rendered.contains("ESPACES"));
+        assert!(rendered.contains("SESSION ACTIVE"));
+        assert!(rendered.contains("COMPLEXE D’OPÉRATIONS"));
         assert!(rendered.contains("Example operation"));
         assert!(!dashboard.scene_area.is_empty());
     }

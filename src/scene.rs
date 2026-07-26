@@ -1,31 +1,54 @@
-use std::f32::consts::TAU;
+use std::collections::BTreeMap;
 
-use glam::{Mat3, Vec2, Vec3};
+use glam::{Vec2, Vec3};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
 use ratatui::widgets::Widget;
 
 use crate::codex::{ThreadStatus, ThreadSummary};
+
+const PALETTE: [Vec3; 6] = [
+    Vec3::new(0.08, 0.72, 1.00),
+    Vec3::new(0.48, 0.35, 1.00),
+    Vec3::new(0.93, 0.31, 0.78),
+    Vec3::new(1.00, 0.54, 0.18),
+    Vec3::new(0.20, 0.90, 0.58),
+    Vec3::new(0.08, 0.86, 0.84),
+];
 
 #[derive(Clone, Debug)]
 pub struct SceneNode {
     pub thread_id: String,
     pub parent_thread_id: Option<String>,
+    /// Normalized screen position. The z component is used for draw ordering.
     pub position: Vec3,
     pub radius: f32,
     pub color: Vec3,
     pub label: String,
     pub thread_index: usize,
+    pub active: bool,
+    pub attention: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct SceneRoom {
+    pub label: String,
+    pub center: Vec2,
+    pub half_width: f32,
+    pub half_height: f32,
+    pub color: Vec3,
 }
 
 #[derive(Clone, Debug)]
 pub struct Scene {
     pub nodes: Vec<SceneNode>,
+    pub rooms: Vec<SceneRoom>,
     pub yaw: f32,
     pub pitch: f32,
     pub zoom: f32,
     pub time: f32,
+    pub selected: usize,
 }
 
 impl Scene {
@@ -35,149 +58,318 @@ impl Scene {
         pitch: f32,
         zoom: f32,
         time: f32,
+        selected: usize,
     ) -> Self {
-        let visible = threads.iter().take(18).collect::<Vec<_>>();
-        let count = visible.len().max(1) as f32;
-        let nodes = visible
-            .into_iter()
-            .enumerate()
-            .map(|(index, thread)| {
-                let angle = index as f32 / count * TAU + time * 0.025;
-                let ring = 2.6 + (index % 3) as f32 * 0.75;
-                let height = 0.55 + ((stable_byte(&thread.id, 0) as f32 / 255.0) * 1.8);
+        let mut projects = BTreeMap::<String, Vec<(usize, &ThreadSummary)>>::new();
+        for (index, thread) in threads.iter().enumerate() {
+            projects
+                .entry(thread.cwd.clone())
+                .or_default()
+                .push((index, thread));
+        }
+
+        let visible = projects.into_iter().take(4).collect::<Vec<_>>();
+        let room_layout = room_layout(visible.len());
+        let mut rooms = Vec::new();
+        let mut nodes = Vec::new();
+        for (project_index, ((cwd, project_threads), layout)) in
+            visible.into_iter().zip(room_layout).enumerate()
+        {
+            let color = PALETTE[stable_byte(&cwd, 1) as usize % PALETTE.len()];
+            rooms.push(SceneRoom {
+                label: project_name(&cwd),
+                center: layout.0,
+                half_width: layout.1,
+                half_height: layout.2,
+                color,
+            });
+
+            let slots = agent_slots(project_threads.len().min(4));
+            for ((thread_index, thread), slot) in project_threads.into_iter().take(4).zip(slots) {
                 let active = matches!(
                     thread.status,
                     ThreadStatus::Active { .. } | ThreadStatus::RecentlyActive
                 );
-                let error = matches!(thread.status, ThreadStatus::SystemError);
-                let attention = matches!(thread.status, ThreadStatus::NeedsAttention);
-                let project_color = project_color(&thread.cwd);
-                let color = if error {
-                    Vec3::new(1.0, 0.18, 0.24)
+                let attention = matches!(
+                    thread.status,
+                    ThreadStatus::NeedsAttention | ThreadStatus::SystemError
+                );
+                let status_color = if matches!(thread.status, ThreadStatus::SystemError) {
+                    Vec3::new(1.0, 0.18, 0.28)
                 } else if attention {
-                    Vec3::new(1.0, 0.58, 0.14)
+                    Vec3::new(1.0, 0.62, 0.16)
                 } else if active {
-                    Vec3::new(0.12, 0.95, 0.85)
+                    Vec3::new(0.20, 0.96, 0.70)
                 } else {
-                    project_color
+                    color
                 };
-                SceneNode {
+                let label_source = thread
+                    .agent_nickname
+                    .as_deref()
+                    .or(thread.name.as_deref())
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| project_name(&thread.cwd));
+                let label = label_source.chars().take(18).collect();
+                nodes.push(SceneNode {
                     thread_id: thread.id.clone(),
                     parent_thread_id: thread.parent_thread_id.clone(),
-                    position: Vec3::new(angle.cos() * ring, height, angle.sin() * ring),
-                    radius: if thread.parent_thread_id.is_some() {
-                        0.20
-                    } else {
-                        0.28
-                    } + if active {
-                        (time * 2.8).sin().abs() * 0.035
-                    } else {
-                        0.0
-                    },
-                    color,
-                    label: project_name(&thread.cwd),
-                    thread_index: index,
-                }
-            })
-            .collect();
+                    position: Vec3::new(
+                        layout.0.x + slot.x * layout.1,
+                        layout.0.y + slot.y * layout.2,
+                        project_index as f32,
+                    ),
+                    radius: 0.035,
+                    color: status_color,
+                    label,
+                    thread_index,
+                    active,
+                    attention,
+                });
+            }
+        }
+
         Self {
             nodes,
+            rooms,
             yaw,
             pitch,
             zoom,
             time,
+            selected,
         }
     }
 
     pub fn render_rgba(&self, width: usize, height: usize) -> Vec<u8> {
-        let mut output = vec![0_u8; width * height * 4];
+        let mut canvas = Canvas::new(width, height);
         if width == 0 || height == 0 {
-            return output;
+            return canvas.pixels;
         }
-        let camera = Camera::new(self.yaw, self.pitch, self.zoom, width, height);
-        for y in 0..height {
-            for x in 0..width {
-                let ray = camera.ray(x, y);
-                let color = self.trace(camera.position, ray, x, y, width, height);
-                let offset = (y * width + x) * 4;
-                output[offset] = linear_to_u8(color.x);
-                output[offset + 1] = linear_to_u8(color.y);
-                output[offset + 2] = linear_to_u8(color.z);
-                output[offset + 3] = 255;
-            }
+        canvas.background();
+        canvas.technical_grid();
+
+        for room in &self.rooms {
+            self.draw_room(&mut canvas, room);
         }
-        self.draw_connections(&mut output, width, height, &camera);
-        output
+        self.draw_infrastructure(&mut canvas);
+
+        let mut nodes = self.nodes.iter().collect::<Vec<_>>();
+        nodes.sort_by(|left, right| left.position.y.total_cmp(&right.position.y));
+        for node in nodes {
+            self.draw_workstation(&mut canvas, node);
+        }
+        self.draw_connections(&mut canvas);
+        canvas.pixels
     }
 
     pub fn project_nodes(&self, width: f32, height: f32) -> Vec<(usize, Vec2, f32)> {
-        let camera = Camera::new(
-            self.yaw,
-            self.pitch,
-            self.zoom,
-            width as usize,
-            height as usize,
-        );
         self.nodes
             .iter()
-            .filter_map(|node| {
-                camera
-                    .project(node.position)
-                    .map(|(point, depth)| (node.thread_index, point, node.radius / depth * width))
+            .map(|node| {
+                (
+                    node.thread_index,
+                    {
+                        let point = self.view_point(node.position.truncate());
+                        Vec2::new(point.x * width, point.y * height)
+                    },
+                    node.radius * width,
+                )
             })
             .collect()
     }
 
-    fn trace(
-        &self,
-        origin: Vec3,
-        ray: Vec3,
-        x: usize,
-        y: usize,
-        width: usize,
-        height: usize,
-    ) -> Vec3 {
-        let mut color = background(x, y, width, height, self.time);
-        let mut closest = f32::INFINITY;
+    fn draw_room(&self, canvas: &mut Canvas, room: &SceneRoom) {
+        let center = canvas.point(self.view_point(room.center));
+        let half_w = room.half_width * canvas.width as f32 * self.zoom.min(1.35);
+        let half_h = room.half_height * canvas.height as f32 * self.zoom.min(1.35);
+        let left = center + Vec2::new(-half_w, 0.0);
+        let back = center + Vec2::new(0.0, -half_h);
+        let right = center + Vec2::new(half_w, 0.0);
+        let front = center + Vec2::new(0.0, half_h);
+        let wall = (canvas.height as f32 * 0.075).max(6.0);
+        let floor = Vec3::new(0.025, 0.055, 0.105) + room.color * 0.075;
 
-        if ray.y < -0.001 {
-            let distance = -origin.y / ray.y;
-            if distance > 0.0 {
-                let point = origin + ray * distance;
-                let grid_x = grid_line(point.x);
-                let grid_z = grid_line(point.z);
-                let fade = (1.0 - distance / 18.0).clamp(0.0, 1.0);
-                let grid = grid_x.max(grid_z) * fade;
-                let horizon = Vec3::new(0.015, 0.045, 0.09) * fade;
-                color = color.max(horizon + Vec3::new(0.02, 0.25, 0.34) * grid);
-                closest = distance;
-            }
+        canvas.polygon(&[left, back, right, front], floor);
+        canvas.polygon(
+            &[left, back, back - Vec2::Y * wall, left - Vec2::Y * wall],
+            floor * 0.74 + room.color * 0.035,
+        );
+        canvas.polygon(
+            &[back, right, right - Vec2::Y * wall, back - Vec2::Y * wall],
+            floor * 0.62 + room.color * 0.025,
+        );
+
+        for step in 1..8 {
+            let t = step as f32 / 8.0;
+            canvas.line(left.lerp(back, t), front.lerp(right, t), room.color, 0.12);
+            canvas.line(back.lerp(right, t), left.lerp(front, t), room.color, 0.12);
         }
+        canvas.glow_line(left, front, room.color, 2);
+        canvas.glow_line(front, right, room.color, 2);
+        canvas.glow_line(left - Vec2::Y * wall, back - Vec2::Y * wall, room.color, 1);
+        canvas.glow_line(back - Vec2::Y * wall, right - Vec2::Y * wall, room.color, 1);
 
-        for node in &self.nodes {
-            if let Some(distance) = sphere_hit(origin, ray, node.position, node.radius)
-                && distance < closest
-            {
-                closest = distance;
-                let point = origin + ray * distance;
-                let normal = (point - node.position).normalize();
-                let light = Vec3::new(-0.45, 0.85, -0.3).normalize();
-                let diffuse = normal.dot(light).max(0.0);
-                let rim = (1.0 - normal.dot(-ray).max(0.0)).powf(2.2);
-                color =
-                    node.color * (0.22 + diffuse * 0.78) + Vec3::new(0.4, 0.9, 1.0) * rim * 0.42;
-            }
-
-            let distance_to_ray = distance_to_ray(origin, ray, node.position);
-            if distance_to_ray < node.radius * 2.8 {
-                let glow = (1.0 - distance_to_ray / (node.radius * 2.8)).powf(3.0);
-                color += node.color * glow * 0.12;
-            }
+        // Wall display and a small plant make each workspace read as an office.
+        let display = back.lerp(right, 0.42) - Vec2::Y * wall * 0.52;
+        canvas.rect(
+            display - Vec2::new(half_w * 0.13, wall * 0.25),
+            display + Vec2::new(half_w * 0.13, wall * 0.25),
+            Vec3::new(0.01, 0.03, 0.055),
+        );
+        canvas.glow_rect(display, half_w * 0.11, wall * 0.18, room.color);
+        for line in 0..3 {
+            let y = display.y - wall * 0.10 + line as f32 * wall * 0.10;
+            canvas.line(
+                Vec2::new(display.x - half_w * 0.075, y),
+                Vec2::new(display.x + half_w * (0.02 + line as f32 * 0.02), y),
+                room.color,
+                0.75,
+            );
         }
-        color.clamp(Vec3::ZERO, Vec3::ONE)
+        self.draw_plant(canvas, left.lerp(back, 0.22) - Vec2::Y * 2.0, room.color);
     }
 
-    fn draw_connections(&self, output: &mut [u8], width: usize, height: usize, camera: &Camera) {
+    fn draw_workstation(&self, canvas: &mut Canvas, node: &SceneNode) {
+        let center = canvas.point(self.view_point(node.position.truncate()));
+        let scale = (canvas.width.min(canvas.height * 2) as f32 / 185.0).clamp(0.45, 4.5);
+        let selected = node.thread_index == self.selected;
+        let pulse = (self.time * 3.2).sin() * 0.5 + 0.5;
+
+        if selected {
+            canvas.glow_circle(
+                center + Vec2::new(0.0, -18.0 * scale),
+                5.5 * scale,
+                Vec3::new(1.0, 0.72, 0.20),
+            );
+            let diamond = center + Vec2::new(0.0, -28.0 * scale - pulse * 2.0);
+            canvas.polygon(
+                &[
+                    diamond + Vec2::new(0.0, -4.0 * scale),
+                    diamond + Vec2::new(4.0 * scale, 0.0),
+                    diamond + Vec2::new(0.0, 4.0 * scale),
+                    diamond + Vec2::new(-4.0 * scale, 0.0),
+                ],
+                Vec3::new(1.0, 0.73, 0.24),
+            );
+        }
+
+        // Desk as a small isometric cuboid.
+        let desk = center + Vec2::new(5.0 * scale, 4.0 * scale);
+        canvas.iso_box(
+            desk,
+            13.0 * scale,
+            5.0 * scale,
+            5.0 * scale,
+            Vec3::new(0.34, 0.42, 0.51),
+        );
+        // Monitor and emissive code lines.
+        let monitor = desk + Vec2::new(1.5 * scale, -10.0 * scale);
+        canvas.rect(
+            monitor - Vec2::new(6.0 * scale, 5.0 * scale),
+            monitor + Vec2::new(6.0 * scale, 5.0 * scale),
+            Vec3::new(0.01, 0.018, 0.028),
+        );
+        canvas.glow_rect(monitor, 5.2 * scale, 4.2 * scale, node.color);
+        for line in 0..3 {
+            let y = monitor.y - 2.6 * scale + line as f32 * 2.2 * scale;
+            canvas.line(
+                Vec2::new(monitor.x - 3.8 * scale, y),
+                Vec2::new(monitor.x + (0.8 + line as f32) * scale, y),
+                node.color,
+                if node.active { 0.95 } else { 0.45 },
+            );
+        }
+
+        // Operator: chair, body, head and arms facing the monitor.
+        canvas.iso_box(
+            center + Vec2::new(-5.0 * scale, 8.0 * scale),
+            6.0 * scale,
+            3.0 * scale,
+            4.0 * scale,
+            Vec3::new(0.025, 0.04, 0.065),
+        );
+        canvas.circle(
+            center + Vec2::new(-4.0 * scale, -8.0 * scale),
+            4.0 * scale,
+            Vec3::new(0.92, 0.57, 0.36),
+        );
+        canvas.polygon(
+            &[
+                center + Vec2::new(-8.0, -4.0) * scale,
+                center + Vec2::new(-1.0, -5.0) * scale,
+                center + Vec2::new(1.0, 6.0) * scale,
+                center + Vec2::new(-7.0, 6.0) * scale,
+            ],
+            node.color * 0.82 + Vec3::splat(0.12),
+        );
+        canvas.line(
+            center + Vec2::new(-1.0, -1.0) * scale,
+            center + Vec2::new(5.0, 2.0) * scale,
+            Vec3::new(0.92, 0.57, 0.36),
+            0.92,
+        );
+        if node.active {
+            canvas.glow_circle(monitor, (8.0 + pulse * 2.0) * scale, node.color * 0.7);
+        }
+        if node.attention {
+            canvas.glow_circle(
+                center + Vec2::new(-4.0 * scale, -18.0 * scale),
+                3.2 * scale,
+                node.color,
+            );
+        }
+    }
+
+    fn draw_plant(&self, canvas: &mut Canvas, center: Vec2, color: Vec3) {
+        let scale = (canvas.width.min(canvas.height * 2) as f32 / 220.0).clamp(0.4, 3.0);
+        canvas.iso_box(
+            center,
+            5.0 * scale,
+            2.5 * scale,
+            5.0 * scale,
+            Vec3::new(0.34, 0.16, 0.07),
+        );
+        canvas.line(
+            center - Vec2::Y * 4.0 * scale,
+            center - Vec2::Y * 13.0 * scale,
+            Vec3::new(0.18, 0.55, 0.29),
+            0.9,
+        );
+        for direction in [-1.0_f32, 1.0] {
+            canvas.glow_circle(
+                center + Vec2::new(direction * 4.0, -12.0) * scale,
+                3.2 * scale,
+                color * 0.55 + Vec3::new(0.05, 0.28, 0.08),
+            );
+        }
+    }
+
+    fn draw_infrastructure(&self, canvas: &mut Canvas) {
+        if self.rooms.len() < 2 {
+            return;
+        }
+        let center = canvas.point(self.view_point(Vec2::new(0.50, 0.82)));
+        let scale = (canvas.width.min(canvas.height * 2) as f32 / 210.0).clamp(0.4, 3.0);
+        for rack in -1..=1 {
+            let position = center + Vec2::new(rack as f32 * 13.0 * scale, 0.0);
+            canvas.iso_box(
+                position,
+                8.0 * scale,
+                4.0 * scale,
+                15.0 * scale,
+                Vec3::new(0.055, 0.09, 0.14),
+            );
+            for light in 0..4 {
+                canvas.glow_circle(
+                    position + Vec2::new(-2.0, -11.0 + light as f32 * 3.0) * scale,
+                    0.8 * scale,
+                    Vec3::new(0.08, 0.88, 0.82),
+                );
+            }
+        }
+    }
+
+    fn draw_connections(&self, canvas: &mut Canvas) {
         for node in &self.nodes {
             let Some(parent_id) = node.parent_thread_id.as_deref() else {
                 continue;
@@ -189,14 +381,20 @@ impl Scene {
             else {
                 continue;
             };
-            let (Some((from, _)), Some((to, _))) = (
-                camera.project(parent.position),
-                camera.project(node.position),
-            ) else {
-                continue;
-            };
-            draw_glow_line(output, width, height, from, to, node.color);
+            canvas.glow_line(
+                canvas.point(self.view_point(parent.position.truncate())),
+                canvas.point(self.view_point(node.position.truncate())),
+                node.color,
+                1,
+            );
         }
+    }
+
+    fn view_point(&self, point: Vec2) -> Vec2 {
+        let center = Vec2::splat(0.5);
+        center
+            + (point - center) * self.zoom
+            + Vec2::new((self.yaw - 0.35) * 0.055, (self.pitch - 0.22) * 0.08)
     }
 }
 
@@ -220,64 +418,318 @@ impl Widget for UnicodeScene<'_> {
             }
         }
 
-        for (index, point, _) in self.scene.project_nodes(width as f32, height as f32) {
-            let Some(node) = self
-                .scene
-                .nodes
-                .iter()
-                .find(|node| node.thread_index == index)
-            else {
-                continue;
-            };
+        for room in &self.scene.rooms {
+            let center = self.scene.view_point(room.center);
+            let x = area.x + (center.x * area.width as f32).max(0.0) as u16;
+            let y = area.y
+                + ((center.y - room.half_height * self.scene.zoom - 0.07) * area.height as f32)
+                    .max(0.0) as u16;
+            let label = format!(" {} ", room.label);
+            if x < area.right() && y < area.bottom() {
+                buffer.set_string(
+                    x.saturating_sub((label.len() / 2) as u16),
+                    y,
+                    label,
+                    Style::new()
+                        .fg(Color::White)
+                        .bg(Color::Rgb(4, 12, 27))
+                        .bold(),
+                );
+            }
+        }
+        for node in &self.scene.nodes {
+            let normalized = self.scene.view_point(node.position.truncate());
+            let point = Vec2::new(normalized.x * width as f32, normalized.y * height as f32);
             let x = area.x.saturating_add(point.x.max(0.0) as u16);
             let y = area.y.saturating_add((point.y.max(0.0) / 2.0) as u16);
             if x < area.right() && y < area.bottom() {
-                let label = format!(" {} ", node.label);
-                buffer.set_string(x, y, label, ratatui::style::Style::new().fg(Color::White));
+                let marker = if node.thread_index == self.scene.selected {
+                    "◆"
+                } else {
+                    "●"
+                };
+                let label = format!(" {marker} {} ", node.label);
+                buffer.set_string(
+                    x.saturating_sub(2),
+                    y.saturating_sub(3),
+                    label,
+                    Style::new()
+                        .fg(to_color(node.color))
+                        .bg(Color::Rgb(4, 12, 27))
+                        .bold(),
+                );
             }
         }
     }
 }
 
-fn background(x: usize, y: usize, width: usize, height: usize, time: f32) -> Vec3 {
-    let nx = x as f32 / width.max(1) as f32;
-    let ny = y as f32 / height.max(1) as f32;
-    let vignette = (1.0 - ((nx - 0.5).powi(2) + (ny - 0.48).powi(2)) * 1.5).max(0.0);
-    let star_seed = ((x as u64 * 73856093) ^ (y as u64 * 19349663)) % 997;
-    let star = if star_seed < 2 {
-        0.35 + (time * 1.7 + star_seed as f32).sin().abs() * 0.45
-    } else {
-        0.0
-    };
-    Vec3::new(0.005, 0.012, 0.035) * vignette
-        + Vec3::new(0.04, 0.18, 0.28) * (1.0 - ny).powf(5.0) * 0.18
-        + Vec3::splat(star)
+struct Canvas {
+    width: usize,
+    height: usize,
+    pixels: Vec<u8>,
 }
 
-fn sphere_hit(origin: Vec3, ray: Vec3, center: Vec3, radius: f32) -> Option<f32> {
-    let oc = origin - center;
-    let half_b = oc.dot(ray);
-    let c = oc.length_squared() - radius * radius;
-    let discriminant = half_b * half_b - c;
-    if discriminant < 0.0 {
-        return None;
+impl Canvas {
+    fn new(width: usize, height: usize) -> Self {
+        Self {
+            width,
+            height,
+            pixels: vec![0; width * height * 4],
+        }
     }
-    let near = -half_b - discriminant.sqrt();
-    (near > 0.0).then_some(near)
+
+    fn point(&self, point: Vec2) -> Vec2 {
+        Vec2::new(point.x * self.width as f32, point.y * self.height as f32)
+    }
+
+    fn background(&mut self) {
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let nx = x as f32 / self.width.max(1) as f32;
+                let ny = y as f32 / self.height.max(1) as f32;
+                let vignette =
+                    (1.0 - ((nx - 0.5).powi(2) + (ny - 0.45).powi(2)) * 1.2).clamp(0.25, 1.0);
+                self.set(
+                    x as isize,
+                    y as isize,
+                    Vec3::new(0.008, 0.018, 0.042) * vignette,
+                    1.0,
+                );
+            }
+        }
+    }
+
+    fn technical_grid(&mut self) {
+        let spacing = (self.width as f32 / 24.0).max(7.0);
+        let color = Vec3::new(0.08, 0.18, 0.30);
+        let diagonal = self.height as f32 * 0.58;
+        let count = (self.width as f32 / spacing) as isize + 16;
+        for index in -8..count {
+            let x = index as f32 * spacing;
+            self.line(
+                Vec2::new(x, 0.0),
+                Vec2::new(x + diagonal, self.height as f32),
+                color,
+                0.18,
+            );
+            self.line(
+                Vec2::new(x, 0.0),
+                Vec2::new(x - diagonal, self.height as f32),
+                color,
+                0.18,
+            );
+        }
+    }
+
+    fn set(&mut self, x: isize, y: isize, color: Vec3, alpha: f32) {
+        if x < 0 || y < 0 || x >= self.width as isize || y >= self.height as isize {
+            return;
+        }
+        let offset = (y as usize * self.width + x as usize) * 4;
+        let existing = Vec3::new(
+            self.pixels[offset] as f32 / 255.0,
+            self.pixels[offset + 1] as f32 / 255.0,
+            self.pixels[offset + 2] as f32 / 255.0,
+        );
+        let blended = existing.lerp(color.clamp(Vec3::ZERO, Vec3::ONE), alpha.clamp(0.0, 1.0));
+        self.pixels[offset] = (blended.x * 255.0) as u8;
+        self.pixels[offset + 1] = (blended.y * 255.0) as u8;
+        self.pixels[offset + 2] = (blended.z * 255.0) as u8;
+        self.pixels[offset + 3] = 255;
+    }
+
+    fn line(&mut self, from: Vec2, to: Vec2, color: Vec3, alpha: f32) {
+        let delta = to - from;
+        let steps = delta.x.abs().max(delta.y.abs()).ceil().max(1.0) as usize;
+        for step in 0..=steps {
+            let point = from + delta * (step as f32 / steps as f32);
+            self.set(
+                point.x.round() as isize,
+                point.y.round() as isize,
+                color,
+                alpha,
+            );
+        }
+    }
+
+    fn glow_line(&mut self, from: Vec2, to: Vec2, color: Vec3, radius: isize) {
+        for offset in -radius..=radius {
+            let alpha = if offset == 0 { 0.9 } else { 0.18 };
+            self.line(
+                from + Vec2::Y * offset as f32,
+                to + Vec2::Y * offset as f32,
+                color,
+                alpha,
+            );
+        }
+    }
+
+    fn rect(&mut self, min: Vec2, max: Vec2, color: Vec3) {
+        let x0 = min.x.floor() as isize;
+        let x1 = max.x.ceil() as isize;
+        let y0 = min.y.floor() as isize;
+        let y1 = max.y.ceil() as isize;
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                self.set(x, y, color, 1.0);
+            }
+        }
+    }
+
+    fn glow_rect(&mut self, center: Vec2, half_w: f32, half_h: f32, color: Vec3) {
+        let min = center - Vec2::new(half_w, half_h);
+        let max = center + Vec2::new(half_w, half_h);
+        for offset in 0..=2 {
+            let o = offset as f32;
+            let alpha = if offset == 0 { 0.95 } else { 0.18 };
+            self.line(
+                Vec2::new(min.x - o, min.y - o),
+                Vec2::new(max.x + o, min.y - o),
+                color,
+                alpha,
+            );
+            self.line(
+                Vec2::new(max.x + o, min.y - o),
+                Vec2::new(max.x + o, max.y + o),
+                color,
+                alpha,
+            );
+            self.line(
+                Vec2::new(max.x + o, max.y + o),
+                Vec2::new(min.x - o, max.y + o),
+                color,
+                alpha,
+            );
+            self.line(
+                Vec2::new(min.x - o, max.y + o),
+                Vec2::new(min.x - o, min.y - o),
+                color,
+                alpha,
+            );
+        }
+    }
+
+    fn circle(&mut self, center: Vec2, radius: f32, color: Vec3) {
+        let radius_sq = radius * radius;
+        for y in (center.y - radius).floor() as isize..=(center.y + radius).ceil() as isize {
+            for x in (center.x - radius).floor() as isize..=(center.x + radius).ceil() as isize {
+                let delta = Vec2::new(x as f32, y as f32) - center;
+                if delta.length_squared() <= radius_sq {
+                    self.set(x, y, color, 1.0);
+                }
+            }
+        }
+    }
+
+    fn glow_circle(&mut self, center: Vec2, radius: f32, color: Vec3) {
+        let outer = radius.max(1.0) * 1.8;
+        for y in (center.y - outer).floor() as isize..=(center.y + outer).ceil() as isize {
+            for x in (center.x - outer).floor() as isize..=(center.x + outer).ceil() as isize {
+                let distance = (Vec2::new(x as f32, y as f32) - center).length();
+                if distance <= outer {
+                    let alpha = ((1.0 - distance / outer) * 0.36).max(0.0);
+                    self.set(x, y, color, alpha);
+                }
+            }
+        }
+    }
+
+    fn polygon(&mut self, points: &[Vec2], color: Vec3) {
+        if points.len() < 3 {
+            return;
+        }
+        for index in 1..points.len() - 1 {
+            self.triangle(points[0], points[index], points[index + 1], color);
+        }
+    }
+
+    fn triangle(&mut self, a: Vec2, b: Vec2, c: Vec2, color: Vec3) {
+        let min_x = a.x.min(b.x).min(c.x).floor() as isize;
+        let max_x = a.x.max(b.x).max(c.x).ceil() as isize;
+        let min_y = a.y.min(b.y).min(c.y).floor() as isize;
+        let max_y = a.y.max(b.y).max(c.y).ceil() as isize;
+        let area = edge(a, b, c);
+        if area.abs() < f32::EPSILON {
+            return;
+        }
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                let point = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+                let w0 = edge(b, c, point);
+                let w1 = edge(c, a, point);
+                let w2 = edge(a, b, point);
+                if (w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0) || (w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0) {
+                    self.set(x, y, color, 1.0);
+                }
+            }
+        }
+    }
+
+    fn iso_box(&mut self, center: Vec2, half_w: f32, half_h: f32, depth: f32, color: Vec3) {
+        let left = center + Vec2::new(-half_w, 0.0);
+        let back = center + Vec2::new(0.0, -half_h);
+        let right = center + Vec2::new(half_w, 0.0);
+        let front = center + Vec2::new(0.0, half_h);
+        self.polygon(&[left, back, right, front], color + Vec3::splat(0.08));
+        self.polygon(
+            &[left, front, front + Vec2::Y * depth, left + Vec2::Y * depth],
+            color * 0.68,
+        );
+        self.polygon(
+            &[
+                front,
+                right,
+                right + Vec2::Y * depth,
+                front + Vec2::Y * depth,
+            ],
+            color * 0.48,
+        );
+    }
 }
 
-fn distance_to_ray(origin: Vec3, ray: Vec3, point: Vec3) -> f32 {
-    let along = (point - origin).dot(ray).max(0.0);
-    (point - (origin + ray * along)).length()
+fn edge(a: Vec2, b: Vec2, point: Vec2) -> f32 {
+    (point.x - a.x) * (b.y - a.y) - (point.y - a.y) * (b.x - a.x)
 }
 
-fn grid_line(value: f32) -> f32 {
-    let distance = (value - value.round()).abs();
-    (1.0 - distance / 0.035).clamp(0.0, 1.0)
+fn room_layout(count: usize) -> Vec<(Vec2, f32, f32)> {
+    match count {
+        0 => Vec::new(),
+        1 => vec![(Vec2::new(0.50, 0.48), 0.36, 0.27)],
+        2 => vec![
+            (Vec2::new(0.50, 0.30), 0.31, 0.18),
+            (Vec2::new(0.50, 0.66), 0.31, 0.18),
+        ],
+        3 => vec![
+            (Vec2::new(0.50, 0.24), 0.28, 0.16),
+            (Vec2::new(0.29, 0.58), 0.25, 0.17),
+            (Vec2::new(0.71, 0.58), 0.25, 0.17),
+        ],
+        _ => vec![
+            (Vec2::new(0.29, 0.29), 0.24, 0.15),
+            (Vec2::new(0.71, 0.29), 0.24, 0.15),
+            (Vec2::new(0.29, 0.63), 0.24, 0.15),
+            (Vec2::new(0.71, 0.63), 0.24, 0.15),
+        ],
+    }
 }
 
-fn linear_to_u8(value: f32) -> u8 {
-    (value.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8
+fn agent_slots(count: usize) -> Vec<Vec2> {
+    match count {
+        0 => Vec::new(),
+        1 => vec![Vec2::new(0.0, 0.10)],
+        2 => vec![Vec2::new(-0.38, -0.05), Vec2::new(0.38, 0.05)],
+        3 => vec![
+            Vec2::new(-0.42, -0.18),
+            Vec2::new(0.38, -0.02),
+            Vec2::new(0.0, 0.45),
+        ],
+        _ => vec![
+            Vec2::new(-0.42, -0.20),
+            Vec2::new(0.40, -0.12),
+            Vec2::new(-0.35, 0.44),
+            Vec2::new(0.40, 0.40),
+        ],
+    }
 }
 
 fn pixel(pixels: &[u8], width: usize, x: usize, y: usize) -> [u8; 3] {
@@ -289,51 +741,12 @@ fn stable_byte(value: &str, index: usize) -> u8 {
     blake3::hash(value.as_bytes()).as_bytes()[index % 32]
 }
 
-fn project_color(cwd: &str) -> Vec3 {
-    const PALETTE: [Vec3; 6] = [
-        Vec3::new(0.10, 0.72, 1.00),
-        Vec3::new(0.38, 0.32, 1.00),
-        Vec3::new(0.85, 0.24, 0.92),
-        Vec3::new(1.00, 0.55, 0.18),
-        Vec3::new(0.18, 0.90, 0.55),
-        Vec3::new(0.08, 0.88, 0.88),
-    ];
-    PALETTE[stable_byte(cwd, 1) as usize % PALETTE.len()]
-}
-
-fn draw_glow_line(
-    output: &mut [u8],
-    width: usize,
-    height: usize,
-    from: Vec2,
-    to: Vec2,
-    color: Vec3,
-) {
-    let delta = to - from;
-    let steps = delta.x.abs().max(delta.y.abs()).ceil().max(1.0) as usize;
-    for step in 0..=steps {
-        let point = from + delta * (step as f32 / steps as f32);
-        for oy in -1..=1 {
-            for ox in -1..=1 {
-                let x = point.x.round() as isize + ox;
-                let y = point.y.round() as isize + oy;
-                if x < 0 || y < 0 || x >= width as isize || y >= height as isize {
-                    continue;
-                }
-                let alpha = if ox == 0 && oy == 0 { 0.78 } else { 0.22 };
-                let offset = (y as usize * width + x as usize) * 4;
-                let existing = Vec3::new(
-                    output[offset] as f32 / 255.0,
-                    output[offset + 1] as f32 / 255.0,
-                    output[offset + 2] as f32 / 255.0,
-                );
-                let blended = existing.lerp(color, alpha).clamp(Vec3::ZERO, Vec3::ONE);
-                output[offset] = (blended.x * 255.0) as u8;
-                output[offset + 1] = (blended.y * 255.0) as u8;
-                output[offset + 2] = (blended.z * 255.0) as u8;
-            }
-        }
-    }
+fn to_color(value: Vec3) -> Color {
+    Color::Rgb(
+        (value.x.clamp(0.0, 1.0) * 255.0) as u8,
+        (value.y.clamp(0.0, 1.0) * 255.0) as u8,
+        (value.z.clamp(0.0, 1.0) * 255.0) as u8,
+    )
 }
 
 pub fn project_name(cwd: &str) -> String {
@@ -345,57 +758,6 @@ pub fn project_name(cwd: &str) -> String {
         .to_uppercase()
 }
 
-struct Camera {
-    position: Vec3,
-    basis: Mat3,
-    aspect: f32,
-    focal: f32,
-    width: f32,
-    height: f32,
-}
-
-impl Camera {
-    fn new(yaw: f32, pitch: f32, zoom: f32, width: usize, height: usize) -> Self {
-        let distance = 9.0 / zoom;
-        let position = Vec3::new(
-            yaw.sin() * distance,
-            3.4 + pitch * 4.0,
-            yaw.cos() * distance,
-        );
-        let target = Vec3::new(0.0, 0.8, 0.0);
-        let forward = (target - position).normalize();
-        let right = forward.cross(Vec3::Y).normalize();
-        let up = right.cross(forward).normalize();
-        let width = width.max(1) as f32;
-        let height = height.max(1) as f32;
-        Self {
-            position,
-            basis: Mat3::from_cols(right, up, forward),
-            aspect: width / height,
-            focal: 1.35,
-            width,
-            height,
-        }
-    }
-
-    fn ray(&self, x: usize, y: usize) -> Vec3 {
-        let nx = ((x as f32 + 0.5) / self.width * 2.0 - 1.0) * self.aspect;
-        let ny = 1.0 - (y as f32 + 0.5) / self.height * 2.0;
-        (self.basis * Vec3::new(nx, ny, self.focal)).normalize()
-    }
-
-    fn project(&self, world: Vec3) -> Option<(Vec2, f32)> {
-        let relative = world - self.position;
-        let view = self.basis.transpose() * relative;
-        if view.z <= 0.05 {
-            return None;
-        }
-        let x = (view.x / view.z * self.focal / self.aspect + 1.0) * 0.5 * self.width;
-        let y = (1.0 - view.y / view.z * self.focal) * 0.5 * self.height;
-        Some((Vec2::new(x, y), view.z))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,10 +766,12 @@ mod tests {
     fn empty_scene_renders_opaque_frame() {
         let scene = Scene {
             nodes: Vec::new(),
-            yaw: 0.0,
-            pitch: 0.0,
+            rooms: Vec::new(),
+            yaw: 0.35,
+            pitch: 0.22,
             zoom: 1.0,
             time: 0.0,
+            selected: 0,
         };
         let pixels = scene.render_rgba(32, 20);
         assert_eq!(pixels.len(), 32 * 20 * 4);

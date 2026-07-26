@@ -14,6 +14,7 @@ pub struct Capabilities {
     pub terminal: String,
     pub true_color: bool,
     pub kitty_graphics: bool,
+    pub sixel_graphics: bool,
     pub mouse: bool,
     pub tmux: bool,
     pub ssh: bool,
@@ -42,6 +43,10 @@ impl Capabilities {
         let kitty_graphics = ["kitty", "ghostty", "wezterm", "konsole"]
             .iter()
             .any(|name| lower.contains(name));
+        let sixel_graphics = std::env::var_os("WT_SESSION").is_some()
+            || ["contour", "foot", "mlterm", "yaft"]
+                .iter()
+                .any(|name| lower.contains(name));
         let color = env("COLORTERM").to_lowercase();
         let true_color = color.contains("truecolor")
             || color.contains("24bit")
@@ -52,6 +57,7 @@ impl Capabilities {
             terminal,
             true_color,
             kitty_graphics,
+            sixel_graphics,
             mouse: std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
             tmux: std::env::var_os("TMUX").is_some(),
             ssh: std::env::var_os("SSH_CONNECTION").is_some(),
@@ -63,7 +69,9 @@ impl Capabilities {
             GraphicsMode::Ultra => RenderingProfile::Ultra,
             GraphicsMode::Unicode => RenderingProfile::Unicode,
             GraphicsMode::Safe => RenderingProfile::Safe,
-            GraphicsMode::Auto if self.kitty_graphics && !self.tmux => RenderingProfile::Ultra,
+            GraphicsMode::Auto if (self.kitty_graphics || self.sixel_graphics) && !self.tmux => {
+                RenderingProfile::Ultra
+            }
             GraphicsMode::Auto if self.true_color => RenderingProfile::Unicode,
             GraphicsMode::Auto => RenderingProfile::Safe,
         }
@@ -76,6 +84,7 @@ pub fn print_doctor() -> anyhow::Result<()> {
     println!("terminal          {}", capabilities.terminal);
     println!("true color        {}", yes_no(capabilities.true_color));
     println!("kitty graphics    {}", yes_no(capabilities.kitty_graphics));
+    println!("sixel graphics    {}", yes_no(capabilities.sixel_graphics));
     println!("mouse             {}", yes_no(capabilities.mouse));
     println!("tmux              {}", yes_no(capabilities.tmux));
     println!("ssh               {}", yes_no(capabilities.ssh));
