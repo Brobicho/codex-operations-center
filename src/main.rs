@@ -9,9 +9,10 @@ mod runtime;
 mod scene;
 mod ui;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+use std::process::{Command as ProcessCommand, Stdio};
 
 #[derive(Debug, Parser)]
 #[command(name = "codex-ops", version, about)]
@@ -23,7 +24,7 @@ struct Cli {
     command: Option<Command>,
 }
 
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 enum GraphicsMode {
     #[default]
     Auto,
@@ -85,6 +86,50 @@ fn main() -> Result<()> {
 
 fn run_dashboard(graphics: GraphicsMode) -> Result<()> {
     let capabilities = capabilities::Capabilities::detect();
+    if should_launch_hd_terminal(graphics, &capabilities) && launch_hd_terminal()? {
+        return Ok(());
+    }
     let selected = capabilities.select(graphics);
     app::run(capabilities, selected)
+}
+
+fn should_launch_hd_terminal(
+    graphics: GraphicsMode,
+    capabilities: &capabilities::Capabilities,
+) -> bool {
+    matches!(graphics, GraphicsMode::Auto | GraphicsMode::Ultra)
+        && !capabilities.kitty_graphics
+        && !capabilities.sixel_graphics
+        && !capabilities.tmux
+        && !capabilities.ssh
+        && std::env::var_os("CODEX_OPS_HD_CHILD").is_none()
+        && (std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some())
+}
+
+fn launch_hd_terminal() -> Result<bool> {
+    let terminal = paths::hd_terminal_path()?;
+    if !terminal.is_file() {
+        return Ok(false);
+    }
+    let executable = std::env::current_exe().context("unable to locate codex-ops")?;
+    let cwd = std::env::current_dir().context("unable to locate the working directory")?;
+    ProcessCommand::new(&terminal)
+        .args([
+            "--detach",
+            "--start-as=maximized",
+            "--title",
+            "Codex Operations Center",
+            "--directory",
+        ])
+        .arg(cwd)
+        .arg(executable)
+        .args(["--graphics", "ultra"])
+        .env("CODEX_OPS_HD_CHILD", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("unable to start bundled terminal {}", terminal.display()))?;
+    println!("Opening the HD operations center in its compatible terminal...");
+    Ok(true)
 }

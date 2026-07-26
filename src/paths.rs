@@ -22,6 +22,18 @@ pub fn events_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("events.jsonl"))
 }
 
+pub fn hd_terminal_dir() -> Result<PathBuf> {
+    Ok(data_dir()?.join("kitty.app"))
+}
+
+pub fn hd_terminal_path() -> Result<PathBuf> {
+    let root = hd_terminal_dir()?;
+    #[cfg(target_os = "macos")]
+    return Ok(root.join("Contents/MacOS/kitty"));
+    #[cfg(not(target_os = "macos"))]
+    Ok(root.join("bin/kitty"))
+}
+
 pub fn manifest_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("install-manifest.json"))
 }

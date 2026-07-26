@@ -66,6 +66,20 @@ mkdir -p "$install_root" "$bin_dir"
 install -m 0755 "${temporary}/codex-ops" "${install_root}/codex-ops"
 ln -sfn "${install_root}/codex-ops" "${bin_dir}/codex-ops"
 
+if [ "$os" = "unknown-linux-gnu" ] && [ "${CODEX_OPS_SKIP_HD_TERMINAL:-0}" != "1" ]; then
+  kitty_root="${install_root}/kitty.app"
+  if [ ! -x "${kitty_root}/bin/kitty" ]; then
+    printf '%s\n' "Installing the self-contained HD terminal renderer..."
+    kitty_installer="${temporary}/kitty-installer.sh"
+    if download "https://sw.kovidgoyal.net/kitty/installer.sh" "$kitty_installer" && \
+       sh "$kitty_installer" installer=version-0.47.0 dest="$install_root" launch=n; then
+      printf '%s\n' "HD terminal renderer installed in ${kitty_root}."
+    else
+      printf '%s\n' "Warning: HD renderer installation failed; Unicode fallback remains available." >&2
+    fi
+  fi
+fi
+
 if [ "${CODEX_OPS_SKIP_INTEGRATION:-0}" != "1" ]; then
   "${install_root}/codex-ops" integrate
 fi
