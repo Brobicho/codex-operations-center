@@ -104,7 +104,7 @@ The integration writes its state beneath `~/.local/share/codex-ops` on Linux and
 | --- | --- |
 | Click a node or session | Select the corresponding Codex thread |
 | Drag the scene or use Left/Right | Move the view |
-| Mouse wheel or `+`/`-` | Zoom |
+| Ctrl+mouse wheel or `+`/`-` | Zoom without reacting to launch-time scroll events |
 | `0` | Recenter the camera and reset zoom |
 | Up/Down or `j`/`k` | Move through sessions |
 | `r` | Refresh immediately |

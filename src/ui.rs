@@ -383,7 +383,7 @@ fn draw_footer(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
             Span::styled(" Sélection  ", Style::new().fg(MUTED)),
             Span::styled("GLISSER/←→", Style::new().fg(Color::White)),
             Span::styled(" Caméra  ", Style::new().fg(MUTED)),
-            Span::styled("MOLETTE/+−", Style::new().fg(Color::White)),
+            Span::styled("CTRL+MOLETTE/+−", Style::new().fg(Color::White)),
             Span::styled(" Zoom  ", Style::new().fg(MUTED)),
             Span::styled("0", Style::new().fg(Color::White)),
             Span::styled(" Recentrer  ", Style::new().fg(MUTED)),

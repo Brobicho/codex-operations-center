@@ -159,12 +159,14 @@ impl Dashboard {
             },
             Event::Mouse(mouse) => match mouse.kind {
                 MouseEventKind::ScrollUp
-                    if self.scene_area.contains((mouse.column, mouse.row).into()) =>
+                    if mouse.modifiers.contains(KeyModifiers::CONTROL)
+                        && self.scene_area.contains((mouse.column, mouse.row).into()) =>
                 {
                     self.camera_zoom = (self.camera_zoom + 0.06).min(MAX_CAMERA_ZOOM)
                 }
                 MouseEventKind::ScrollDown
-                    if self.scene_area.contains((mouse.column, mouse.row).into()) =>
+                    if mouse.modifiers.contains(KeyModifiers::CONTROL)
+                        && self.scene_area.contains((mouse.column, mouse.row).into()) =>
                 {
                     self.camera_zoom = (self.camera_zoom - 0.06).max(MIN_CAMERA_ZOOM)
                 }
