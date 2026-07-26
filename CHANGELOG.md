@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.4 - 2026-07-26
+
+- Stop regenerating the HD framebuffer for unrelated terminal events and unchanged refreshes.
+- Coalesce wheel and drag gestures into one final frame, ignoring contradictory wheel bounce.
+- Send local HD frames through Kitty's temporary-file transport instead of flooding the TTY.
+- Cache static scene layers, fast-path opaque pixels, and cap only the internal live framebuffer.
+- Move Codex discovery and rollout parsing off the interactive render thread.
+- Describe observed commands and changed filenames in the activity journal.
+- Reduce rollout scanning and idle refresh pressure while retaining live task detection.
+
 ## 0.1.3 - 2026-07-26
 
 - Ignore residual unmodified wheel events when the HD terminal window opens.

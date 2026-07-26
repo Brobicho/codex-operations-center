@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use base64::Engine;
@@ -9,6 +10,9 @@ use crate::app::Dashboard;
 use crate::scene::Scene;
 
 const IMAGE_ID: u32 = 7_140_289;
+const MAX_LIVE_WIDTH: usize = 960;
+const MAX_LIVE_HEIGHT: usize = 640;
+static FRAME_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub fn draw_scene(dashboard: &Dashboard) -> Result<()> {
     let area = dashboard.scene_area;
@@ -27,35 +31,36 @@ pub fn draw_scene(dashboard: &Dashboard) -> Result<()> {
         dashboard.started_at.elapsed().as_secs_f32(),
         dashboard.selected,
     );
-    let rgba = scene.render_rgba(width, height);
+    let scale = (MAX_LIVE_WIDTH as f32 / width as f32)
+        .min(MAX_LIVE_HEIGHT as f32 / height as f32)
+        .min(1.0);
+    let render_width = (width as f32 * scale).round().max(1.0) as usize;
+    let render_height = (height as f32 * scale).round().max(1.0) as usize;
+    let rgba = scene.render_rgba(render_width, render_height);
     if dashboard.capabilities.kitty_graphics {
-        draw_kitty(area, width, height, &rgba)
+        draw_kitty(area, render_width, render_height, &rgba)
     } else if dashboard.capabilities.sixel_graphics {
-        draw_sixel(area, width, height, rgba)
+        draw_sixel(area, render_width, render_height, rgba)
     } else {
         Ok(())
     }
 }
 
 fn draw_kitty(area: ratatui::layout::Rect, width: usize, height: usize, rgba: &[u8]) -> Result<()> {
-    let png = encode_png(width as u32, height as u32, rgba)?;
-    let encoded = STANDARD.encode(png);
+    let sequence = FRAME_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "tty-graphics-protocol-codex-ops-{}-{sequence}.rgba",
+        std::process::id()
+    ));
+    std::fs::write(&path, rgba)?;
+    let encoded_path = STANDARD.encode(path.as_os_str().as_encoded_bytes());
     let mut stdout = io::stdout().lock();
     write!(stdout, "\x1b7\x1b[{};{}H", area.y + 1, area.x + 1)?;
-    for (index, chunk) in encoded.as_bytes().chunks(4096).enumerate() {
-        let more = usize::from((index + 1) * 4096 < encoded.len());
-        if index == 0 {
-            write!(
-                stdout,
-                "\x1b_Ga=T,f=100,i={IMAGE_ID},c={},r={},z=-1,C=1,m={more};",
-                area.width, area.height
-            )?;
-        } else {
-            write!(stdout, "\x1b_Gm={more};")?;
-        }
-        stdout.write_all(chunk)?;
-        write!(stdout, "\x1b\\")?;
-    }
+    write!(
+        stdout,
+        "\x1b_Ga=T,f=32,t=t,s={width},v={height},i={IMAGE_ID},p=1,c={},r={},z=-1,C=1,q=2;{encoded_path}\x1b\\",
+        area.width, area.height
+    )?;
     write!(stdout, "\x1b8")?;
     stdout.flush()?;
     Ok(())
@@ -114,6 +119,7 @@ fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>> {
         let mut encoder = png::Encoder::new(&mut output, width, height);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::Fastest);
         let mut writer = encoder.write_header()?;
         writer.write_image_data(rgba)?;
     }

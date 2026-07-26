@@ -171,30 +171,8 @@ fn command_summary(payload: &Value) -> String {
         .pointer("/tool_input/command")
         .or_else(|| payload.pointer("/tool_input/cmd"))
         .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_lowercase();
-    if [
-        "cargo test",
-        "pytest",
-        "npm test",
-        "pnpm test",
-        "php artisan test",
-    ]
-    .iter()
-    .any(|needle| command.contains(needle))
-    {
-        "Exécute les tests".to_owned()
-    } else if command.contains("git diff") || command.contains("git status") {
-        "Vérifie les changements Git".to_owned()
-    } else if command.contains("git commit") {
-        "Enregistre les changements dans Git".to_owned()
-    } else if command.contains("rg ") || command.contains("grep ") || command.contains("find ") {
-        "Recherche dans le projet".to_owned()
-    } else if command.contains("build") || command.contains("compile") {
-        "Compile le projet".to_owned()
-    } else {
-        "Exécute une commande".to_owned()
-    }
+        .unwrap_or_default();
+    crate::runtime::summarize_command(command)
 }
 
 #[cfg(test)]
@@ -213,7 +191,7 @@ mod tests {
             "tool_input": { "command": "cargo test --all" }
         });
         let event = EventRecord::from_hook(payload).unwrap();
-        assert_eq!(event.summary, "Exécute les tests");
+        assert_eq!(event.summary, "Commande · cargo test --all");
     }
 
     #[test]

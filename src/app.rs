@@ -1,4 +1,6 @@
 use std::io::{self, Stdout};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -43,6 +45,10 @@ pub struct Dashboard {
     pub status_message: Option<String>,
     pub last_ultra_frame: Instant,
     pub scene_dirty: bool,
+    pub last_camera_input: Option<Instant>,
+    pub zoom_gesture: Option<(i8, Instant)>,
+    pub scene_refresh_pending: bool,
+    pub refresh_requested: bool,
 }
 
 impl Dashboard {
@@ -70,23 +76,56 @@ impl Dashboard {
             status_message: None,
             last_ultra_frame: Instant::now() - Duration::from_secs(1),
             scene_dirty: true,
+            last_camera_input: None,
+            zoom_gesture: None,
+            scene_refresh_pending: false,
+            refresh_requested: false,
         }
     }
 
-    fn refresh(&mut self) {
-        match codex::list_threads(250) {
-            Ok(threads) => {
+    fn apply_refresh(&mut self, result: Result<(Vec<ThreadSummary>, Vec<EventRecord>), String>) {
+        let previous_scene = self.scene_signature();
+        match result {
+            Ok((threads, events)) => {
                 self.threads = threads;
+                self.events = events;
                 self.selected = self.selected.min(self.threads.len().saturating_sub(1));
                 self.status_message = None;
             }
-            Err(error) => self.status_message = Some(format!("Codex indisponible : {error:#}")),
+            Err(error) => self.status_message = Some(format!("Codex indisponible : {error}")),
         }
-        if let Ok(events) = events::recent_for_threads(&self.threads, 500) {
-            self.events = events;
+        self.scene_refresh_pending |= previous_scene != self.scene_signature();
+    }
+
+    fn scene_signature(&self) -> Vec<(String, String, String, bool)> {
+        let mut projects = Vec::<(String, usize)>::new();
+        let mut signature = Vec::new();
+        for (index, thread) in self.effective_threads().into_iter().enumerate() {
+            let project_index = projects
+                .iter()
+                .position(|(cwd, _)| cwd == &thread.cwd)
+                .or_else(|| {
+                    if projects.len() >= 3 {
+                        None
+                    } else {
+                        projects.push((thread.cwd.clone(), 0));
+                        Some(projects.len() - 1)
+                    }
+                });
+            let Some(project_index) = project_index else {
+                continue;
+            };
+            if projects[project_index].1 >= 2 {
+                continue;
+            }
+            projects[project_index].1 += 1;
+            let label = thread
+                .name
+                .clone()
+                .unwrap_or_else(|| thread.preview.clone());
+            signature.push((thread.id, thread.cwd, label, index == self.selected));
         }
-        self.last_refresh = Instant::now();
-        self.scene_dirty = true;
+        signature
     }
 
     pub fn effective_threads(&self) -> Vec<ThreadSummary> {
@@ -123,8 +162,22 @@ impl Dashboard {
             .collect()
     }
 
-    fn on_event(&mut self, event: Event) {
+    fn wheel_zoom(&mut self, direction: i8) {
+        let now = Instant::now();
+        if self.zoom_gesture.is_some_and(|(previous, received_at)| {
+            previous != direction && received_at.elapsed() < Duration::from_millis(260)
+        }) {
+            self.last_camera_input = Some(now);
+            return;
+        }
+        self.camera_zoom =
+            (self.camera_zoom + direction as f32 * 0.06).clamp(MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
+        self.zoom_gesture = Some((direction, now));
+        self.last_camera_input = Some(now);
         self.scene_dirty = true;
+    }
+
+    fn on_event(&mut self, event: Event) {
         match event {
             Event::Key(key)
                 if key.kind == KeyEventKind::Press
@@ -138,23 +191,44 @@ impl Dashboard {
                 KeyCode::Down | KeyCode::Char('j') => {
                     if !self.threads.is_empty() {
                         self.selected = (self.selected + 1).min(self.threads.len() - 1);
+                        self.scene_dirty = true;
                     }
                 }
-                KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
-                KeyCode::Left | KeyCode::Char('h') => self.camera_yaw -= 0.12,
-                KeyCode::Right | KeyCode::Char('l') => self.camera_yaw += 0.12,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.selected = self.selected.saturating_sub(1);
+                    self.scene_dirty = true;
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    self.camera_yaw -= 0.12;
+                    self.scene_dirty = true;
+                    self.last_camera_input = Some(Instant::now());
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    self.camera_yaw += 0.12;
+                    self.scene_dirty = true;
+                    self.last_camera_input = Some(Instant::now());
+                }
                 KeyCode::Char('+') | KeyCode::Char('=') => {
-                    self.camera_zoom = (self.camera_zoom + 0.06).min(MAX_CAMERA_ZOOM)
+                    self.camera_zoom = (self.camera_zoom + 0.06).min(MAX_CAMERA_ZOOM);
+                    self.scene_dirty = true;
+                    self.last_camera_input = Some(Instant::now());
                 }
                 KeyCode::Char('-') => {
-                    self.camera_zoom = (self.camera_zoom - 0.06).max(MIN_CAMERA_ZOOM)
+                    self.camera_zoom = (self.camera_zoom - 0.06).max(MIN_CAMERA_ZOOM);
+                    self.scene_dirty = true;
+                    self.last_camera_input = Some(Instant::now());
                 }
                 KeyCode::Char('0') => {
                     self.camera_yaw = 0.35;
                     self.camera_pitch = 0.22;
                     self.camera_zoom = 1.0;
+                    self.scene_dirty = true;
+                    self.last_camera_input = Some(Instant::now());
                 }
-                KeyCode::Char('r') => self.refresh(),
+                KeyCode::Char('r') => {
+                    self.refresh_requested = true;
+                    self.scene_dirty = true;
+                }
                 _ => {}
             },
             Event::Mouse(mouse) => match mouse.kind {
@@ -162,18 +236,19 @@ impl Dashboard {
                     if mouse.modifiers.contains(KeyModifiers::CONTROL)
                         && self.scene_area.contains((mouse.column, mouse.row).into()) =>
                 {
-                    self.camera_zoom = (self.camera_zoom + 0.06).min(MAX_CAMERA_ZOOM)
+                    self.wheel_zoom(1);
                 }
                 MouseEventKind::ScrollDown
                     if mouse.modifiers.contains(KeyModifiers::CONTROL)
                         && self.scene_area.contains((mouse.column, mouse.row).into()) =>
                 {
-                    self.camera_zoom = (self.camera_zoom - 0.06).max(MIN_CAMERA_ZOOM)
+                    self.wheel_zoom(-1);
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
                     let point = (mouse.column, mouse.row).into();
                     if self.refresh_button.contains(point) {
-                        self.refresh();
+                        self.refresh_requested = true;
+                        self.scene_dirty = true;
                         return;
                     }
                     if self.quit_button.contains(point) {
@@ -182,8 +257,11 @@ impl Dashboard {
                     }
                     self.dragging = true;
                     self.last_mouse = Some((mouse.column, mouse.row));
-                    if let Some(index) = ui::thread_at(self, mouse.column, mouse.row) {
+                    if let Some(index) = ui::thread_at(self, mouse.column, mouse.row)
+                        && self.selected != index
+                    {
                         self.selected = index;
+                        self.scene_dirty = true;
                     }
                 }
                 MouseEventKind::Drag(MouseButton::Left) if self.dragging => {
@@ -194,13 +272,18 @@ impl Dashboard {
                             .clamp(-0.15, 0.65);
                     }
                     self.last_mouse = Some((mouse.column, mouse.row));
+                    self.scene_dirty = true;
+                    self.last_camera_input = Some(Instant::now());
                 }
                 MouseEventKind::Up(MouseButton::Left) => {
                     self.dragging = false;
                     self.last_mouse = None;
+                    self.scene_dirty = true;
+                    self.last_camera_input = Some(Instant::now() - Duration::from_millis(200));
                 }
                 _ => {}
             },
+            Event::Resize(_, _) => self.scene_dirty = true,
             _ => {}
         }
     }
@@ -215,40 +298,97 @@ pub fn run(capabilities: Capabilities, profile: RenderingProfile) -> Result<()> 
 
     let mut guard = TerminalGuard::enter()?;
     let mut dashboard = Dashboard::new(capabilities, profile);
-    let tick_rate = Duration::from_millis(80);
+    let tick_rate = Duration::from_millis(100);
+    let mut ui_dirty = true;
+    let mut last_ui_frame = Instant::now() - Duration::from_secs(1);
+    let (refresh_sender, refresh_receiver) = mpsc::channel();
+    let mut refresh_in_flight = false;
 
     while !dashboard.should_quit {
         let frame_started = Instant::now();
-        guard
-            .terminal
-            .draw(|frame| ui::draw(frame, &mut dashboard))?;
+        let wait = tick_rate.saturating_sub(frame_started.elapsed());
+        if event::poll(wait)? {
+            loop {
+                let event = event::read()?;
+                let affects_ui = !matches!(
+                    event,
+                    Event::Mouse(crossterm::event::MouseEvent {
+                        kind: MouseEventKind::Moved
+                            | MouseEventKind::ScrollUp
+                            | MouseEventKind::ScrollDown
+                            | MouseEventKind::Drag(_)
+                            | MouseEventKind::Up(_),
+                        ..
+                    }) | Event::Key(crossterm::event::KeyEvent {
+                        code: KeyCode::Left
+                            | KeyCode::Right
+                            | KeyCode::Char('h' | 'l' | '+' | '=' | '-' | '0'),
+                        ..
+                    })
+                );
+                dashboard.on_event(event);
+                ui_dirty |= affects_ui;
+                if !event::poll(Duration::ZERO)? {
+                    break;
+                }
+            }
+        }
+        if let Ok(result) = refresh_receiver.try_recv() {
+            refresh_in_flight = false;
+            dashboard.apply_refresh(result);
+            if dashboard.scene_refresh_pending
+                && dashboard.last_ultra_frame.elapsed() >= Duration::from_secs(30)
+            {
+                dashboard.scene_dirty = true;
+                dashboard.scene_refresh_pending = false;
+            }
+            ui_dirty = true;
+        }
+        if (dashboard.refresh_requested
+            || dashboard.last_refresh.elapsed() >= Duration::from_secs(5))
+            && !refresh_in_flight
+        {
+            dashboard.refresh_requested = false;
+            dashboard.last_refresh = Instant::now();
+            refresh_in_flight = true;
+            let sender = refresh_sender.clone();
+            thread::spawn(move || {
+                let _ = sender.send(load_dashboard_data());
+            });
+        }
+        if ui_dirty || last_ui_frame.elapsed() >= Duration::from_secs(1) {
+            guard
+                .terminal
+                .draw(|frame| ui::draw(frame, &mut dashboard))?;
+            ui_dirty = false;
+            last_ui_frame = Instant::now();
+        }
         if dashboard.profile == RenderingProfile::Ultra
             && !dashboard.scene_area.is_empty()
-            && (!dashboard.capabilities.sixel_graphics || dashboard.scene_dirty)
-            && dashboard.last_ultra_frame.elapsed()
-                >= if dashboard.capabilities.sixel_graphics {
-                    Duration::from_millis(450)
-                } else {
-                    Duration::from_millis(160)
-                }
+            && dashboard.scene_dirty
+            && !dashboard.dragging
+            && dashboard
+                .last_camera_input
+                .is_none_or(|last_input| last_input.elapsed() >= Duration::from_millis(80))
+            && dashboard.last_ultra_frame.elapsed() >= Duration::from_millis(80)
         {
             kitty::draw_scene(&dashboard)?;
             dashboard.last_ultra_frame = Instant::now();
             dashboard.scene_dirty = false;
-        }
-
-        let wait = tick_rate.saturating_sub(frame_started.elapsed());
-        if event::poll(wait)? {
-            dashboard.on_event(event::read()?);
-        }
-        if dashboard.last_refresh.elapsed() >= Duration::from_secs(3) {
-            dashboard.refresh();
+            dashboard.last_camera_input = None;
+            dashboard.zoom_gesture = None;
         }
     }
     if dashboard.profile == RenderingProfile::Ultra {
         kitty::delete_scene()?;
     }
     Ok(())
+}
+
+fn load_dashboard_data() -> Result<(Vec<ThreadSummary>, Vec<EventRecord>), String> {
+    let threads = codex::list_threads(250).map_err(|error| format!("{error:#}"))?;
+    let events = events::recent_for_threads(&threads, 500).map_err(|error| format!("{error:#}"))?;
+    Ok((threads, events))
 }
 
 struct TerminalGuard {
