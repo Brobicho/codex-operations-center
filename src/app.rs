@@ -39,6 +39,7 @@ pub struct Dashboard {
     pub last_mouse: Option<(u16, u16)>,
     pub status_message: Option<String>,
     pub last_ultra_frame: Instant,
+    pub scene_dirty: bool,
 }
 
 impl Dashboard {
@@ -65,6 +66,7 @@ impl Dashboard {
             last_mouse: None,
             status_message: None,
             last_ultra_frame: Instant::now() - Duration::from_secs(1),
+            scene_dirty: true,
         }
     }
 
@@ -81,6 +83,7 @@ impl Dashboard {
             self.events = events;
         }
         self.last_refresh = Instant::now();
+        self.scene_dirty = true;
     }
 
     pub fn effective_threads(&self) -> Vec<ThreadSummary> {
@@ -116,6 +119,7 @@ impl Dashboard {
     }
 
     fn on_event(&mut self, event: Event) {
+        self.scene_dirty = true;
         match event {
             Event::Key(key)
                 if key.kind == KeyEventKind::Press
@@ -200,6 +204,7 @@ pub fn run(capabilities: Capabilities, profile: RenderingProfile) -> Result<()> 
             .draw(|frame| ui::draw(frame, &mut dashboard))?;
         if dashboard.profile == RenderingProfile::Ultra
             && !dashboard.scene_area.is_empty()
+            && (!dashboard.capabilities.sixel_graphics || dashboard.scene_dirty)
             && dashboard.last_ultra_frame.elapsed()
                 >= if dashboard.capabilities.sixel_graphics {
                     Duration::from_millis(450)
@@ -209,6 +214,7 @@ pub fn run(capabilities: Capabilities, profile: RenderingProfile) -> Result<()> 
         {
             kitty::draw_scene(&dashboard)?;
             dashboard.last_ultra_frame = Instant::now();
+            dashboard.scene_dirty = false;
         }
 
         let wait = tick_rate.saturating_sub(frame_started.elapsed());

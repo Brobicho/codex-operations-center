@@ -130,4 +130,15 @@ mod tests {
         let png = encode_png(2, 1, &rgba).unwrap();
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
+
+    #[test]
+    fn encodes_valid_sixel() {
+        let rgba = vec![10, 20, 30, 255, 50, 60, 70, 255];
+        let sixel = icy_sixel::SixelImage::try_from_rgba(rgba, 2, 1)
+            .unwrap()
+            .encode()
+            .unwrap();
+        assert!(sixel.starts_with("\x1bP"));
+        assert!(sixel.ends_with("\x1b\\"));
+    }
 }

@@ -558,6 +558,7 @@ mod tests {
             last_mouse: None,
             status_message: None,
             last_ultra_frame: Instant::now(),
+            scene_dirty: true,
         };
         let backend = TestBackend::new(180, 52);
         let mut terminal = Terminal::new(backend).unwrap();
