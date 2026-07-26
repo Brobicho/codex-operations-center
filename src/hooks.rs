@@ -28,6 +28,8 @@ struct InstallManifest {
     hook_command: String,
     executable_path: Option<String>,
     launcher_path: Option<String>,
+    #[serde(default)]
+    launcher_paths: Vec<String>,
 }
 
 pub fn install() -> Result<()> {
@@ -46,7 +48,13 @@ pub fn install() -> Result<()> {
             hooks_path: path.display().to_string(),
             hook_command: command,
             executable_path: Some(executable.display().to_string()),
-            launcher_path: owned_launcher(&executable).map(|path| path.display().to_string()),
+            launcher_path: owned_launchers(&executable)
+                .first()
+                .map(|path| path.display().to_string()),
+            launcher_paths: owned_launchers(&executable)
+                .into_iter()
+                .map(|path| path.display().to_string())
+                .collect(),
         })?,
     )?;
 
@@ -61,8 +69,14 @@ pub fn uninstall(purge: bool) -> Result<()> {
     if manifest_path.exists() {
         let manifest: InstallManifest = serde_json::from_slice(&fs::read(&manifest_path)?)?;
         remove_from(Path::new(&manifest.hooks_path), &manifest.hook_command)?;
-        if let Some(launcher) = manifest.launcher_path.as_deref() {
-            let launcher = Path::new(launcher);
+        let mut launchers = manifest.launcher_paths;
+        if let Some(launcher) = manifest.launcher_path {
+            launchers.push(launcher);
+        }
+        launchers.sort();
+        launchers.dedup();
+        for launcher in launchers {
+            let launcher = Path::new(&launcher);
             if launcher.exists() {
                 fs::remove_file(launcher)
                     .with_context(|| format!("unable to remove launcher {}", launcher.display()))?;
@@ -111,11 +125,19 @@ pub fn uninstall(purge: bool) -> Result<()> {
     Ok(())
 }
 
-fn owned_launcher(executable: &Path) -> Option<std::path::PathBuf> {
-    let launcher = paths::launcher_path().ok()?;
-    let target = fs::canonicalize(&launcher).ok()?;
-    let executable = fs::canonicalize(executable).ok()?;
-    (target == executable).then_some(launcher)
+fn owned_launchers(executable: &Path) -> Vec<std::path::PathBuf> {
+    let mut launchers = paths::launcher_path().into_iter().collect::<Vec<_>>();
+    if let Some(paths) = std::env::var_os("CODEX_OPS_LAUNCHER_PATHS") {
+        launchers.extend(std::env::split_paths(&paths));
+    }
+    let Ok(executable) = fs::canonicalize(executable) else {
+        return Vec::new();
+    };
+    launchers.sort();
+    launchers.dedup();
+    launchers
+        .retain(|launcher| fs::canonicalize(launcher).is_ok_and(|target| target == executable));
+    launchers
 }
 
 fn executable_is_owned(executable: &Path) -> bool {

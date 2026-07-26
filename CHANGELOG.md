@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.9 - 2026-07-27
+
+- Detect an older user-owned `codex-ops` executable that shadows the normal launcher in `PATH`, including previous Cargo installations.
+- Redirect verified shadowing launchers to the managed current release and track every owned launcher for clean uninstallation.
+
 ## 0.1.8 - 2026-07-27
 
 - Keep the bundled HD terminal attached to the launcher so GNOME presents a visible application window and reports launch failures.
