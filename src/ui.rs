@@ -37,7 +37,7 @@ pub fn draw(frame: &mut Frame<'_>, dashboard: &mut Dashboard) {
         Constraint::Length(4),
         Constraint::Min(12),
         Constraint::Length(8),
-        Constraint::Length(2),
+        Constraint::Length(3),
     ])
     .split(area);
     draw_header(frame, dashboard, vertical[0]);
@@ -164,10 +164,13 @@ fn draw_threads(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
     dashboard.thread_area = inner;
     frame.render_widget(panel("SESSIONS"), area);
     let threads = dashboard.effective_threads();
+    let capacity = inner.height as usize / 3;
+    let start = thread_list_start(dashboard, capacity);
     let items = threads
         .iter()
         .enumerate()
-        .take(inner.height as usize / 3)
+        .skip(start)
+        .take(capacity)
         .map(|(index, thread)| {
             let selected = index == dashboard.selected;
             let status = status(thread);
@@ -226,8 +229,16 @@ fn draw_events(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
     frame.render_widget(Paragraph::new(content).wrap(Wrap { trim: true }), inner);
 }
 
-fn draw_footer(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
+fn draw_footer(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
     let status = dashboard.status_message.as_deref().unwrap_or("");
+    let columns = Layout::horizontal([
+        Constraint::Min(40),
+        Constraint::Length(16),
+        Constraint::Length(12),
+    ])
+    .split(area);
+    dashboard.refresh_button = columns[1];
+    dashboard.quit_button = columns[2];
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" CLIC/↑↓ ", Style::new().fg(BG).bg(CYAN).bold()),
@@ -236,10 +247,6 @@ fn draw_footer(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
             Span::styled(" Caméra  ", Style::new().fg(MUTED)),
             Span::styled("MOLETTE/+−", Style::new().fg(Color::White)),
             Span::styled(" Zoom  ", Style::new().fg(MUTED)),
-            Span::styled("R", Style::new().fg(Color::White)),
-            Span::styled(" Actualiser  ", Style::new().fg(MUTED)),
-            Span::styled("Q", Style::new().fg(Color::White)),
-            Span::styled(" Quitter", Style::new().fg(MUTED)),
             Span::styled(
                 format!("  {}", dashboard.capabilities.terminal),
                 Style::new().fg(Color::Rgb(54, 82, 116)),
@@ -247,7 +254,29 @@ fn draw_footer(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
             Span::styled(format!("  {status}"), Style::new().fg(RED)),
         ]))
         .style(Style::new().bg(BG)),
-        area,
+        columns[0],
+    );
+    frame.render_widget(
+        Paragraph::new("↻ ACTUALISER")
+            .alignment(Alignment::Center)
+            .style(Style::new().fg(CYAN).bg(Color::Rgb(9, 32, 54)))
+            .block(
+                Block::new()
+                    .borders(Borders::ALL)
+                    .border_style(Style::new().fg(CYAN)),
+            ),
+        columns[1],
+    );
+    frame.render_widget(
+        Paragraph::new("QUITTER")
+            .alignment(Alignment::Center)
+            .style(Style::new().fg(Color::White).bg(Color::Rgb(42, 15, 29)))
+            .block(
+                Block::new()
+                    .borders(Borders::ALL)
+                    .border_style(Style::new().fg(RED)),
+            ),
+        columns[2],
     );
 }
 
@@ -274,10 +303,19 @@ pub fn thread_at(dashboard: &Dashboard, column: u16, row: u16) -> Option<usize> 
             .map(|(index, _)| index);
     }
     if dashboard.thread_area.contains((column, row).into()) {
-        let index = ((row - dashboard.thread_area.y) / 3) as usize;
+        let capacity = dashboard.thread_area.height as usize / 3;
+        let index =
+            thread_list_start(dashboard, capacity) + ((row - dashboard.thread_area.y) / 3) as usize;
         return (index < dashboard.threads.len()).then_some(index);
     }
     None
+}
+
+fn thread_list_start(dashboard: &Dashboard, capacity: usize) -> usize {
+    if capacity == 0 {
+        return 0;
+    }
+    dashboard.selected.saturating_sub(capacity - 1)
 }
 
 fn panel(title: &'static str) -> Block<'static> {
@@ -378,6 +416,8 @@ mod tests {
             last_refresh: Instant::now(),
             scene_area: Rect::default(),
             thread_area: Rect::default(),
+            refresh_button: Rect::default(),
+            quit_button: Rect::default(),
             should_quit: false,
             dragging: false,
             last_mouse: None,

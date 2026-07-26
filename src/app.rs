@@ -2,6 +2,7 @@ use std::io::{self, Stdout};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use chrono::Utc;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
     MouseButton, MouseEventKind,
@@ -31,6 +32,8 @@ pub struct Dashboard {
     pub last_refresh: Instant,
     pub scene_area: ratatui::layout::Rect,
     pub thread_area: ratatui::layout::Rect,
+    pub refresh_button: ratatui::layout::Rect,
+    pub quit_button: ratatui::layout::Rect,
     pub should_quit: bool,
     pub dragging: bool,
     pub last_mouse: Option<(u16, u16)>,
@@ -55,6 +58,8 @@ impl Dashboard {
             last_refresh: Instant::now(),
             scene_area: ratatui::layout::Rect::default(),
             thread_area: ratatui::layout::Rect::default(),
+            refresh_button: ratatui::layout::Rect::default(),
+            quit_button: ratatui::layout::Rect::default(),
             should_quit: false,
             dragging: false,
             last_mouse: None,
@@ -94,10 +99,15 @@ impl Dashboard {
                     event.session_id == thread.session_id || event.session_id == thread.id
                 });
                 if let Some(event) = latest {
+                    let is_recent = Utc::now()
+                        .signed_duration_since(event.received_at)
+                        .num_minutes()
+                        < 10;
                     thread.status = match event.event.as_str() {
                         "PermissionRequest" => crate::codex::ThreadStatus::NeedsAttention,
                         "SessionEnd" | "Stop" => crate::codex::ThreadStatus::Idle,
-                        _ => crate::codex::ThreadStatus::RecentlyActive,
+                        _ if is_recent => crate::codex::ThreadStatus::RecentlyActive,
+                        _ => thread.status,
                     };
                 }
                 thread
@@ -137,6 +147,15 @@ impl Dashboard {
                     self.camera_zoom = (self.camera_zoom - 0.08).max(0.55)
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
+                    let point = (mouse.column, mouse.row).into();
+                    if self.refresh_button.contains(point) {
+                        self.refresh();
+                        return;
+                    }
+                    if self.quit_button.contains(point) {
+                        self.should_quit = true;
+                        return;
+                    }
                     self.dragging = true;
                     self.last_mouse = Some((mouse.column, mouse.row));
                     if let Some(index) = ui::thread_at(self, mouse.column, mouse.row) {
