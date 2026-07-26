@@ -15,7 +15,7 @@ curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/Brobicho/codex-operations-center/main/install.sh | sh
 ```
 
-The installer downloads the matching release artifact, verifies its SHA-256 checksum, installs without `sudo`, and registers the global Codex lifecycle integration. You retain the opportunity to inspect the script before running it.
+The installer downloads the matching release artifact, verifies its SHA-256 checksum, installs without `sudo`, and registers the global Codex lifecycle integration. On Linux it also installs a pinned, self-contained Kitty renderer beneath the same application directory so `codex-ops` can open the HD view automatically when the current terminal has no pixel protocol. You retain the opportunity to inspect the script before running it.
 
 After installation:
 
@@ -24,15 +24,16 @@ codex-ops doctor
 codex-ops
 ```
 
-GNOME Terminal users can enable its built-in Sixel pixel renderer once for the
-full-resolution scene (the command changes only the active terminal profile):
+GNOME Terminal users whose VTE build explicitly reports `+SIXEL` can enable its
+built-in pixel renderer once:
 
 ```bash
 codex-ops terminal-graphics
 ```
 
-Close and reopen the terminal afterward. The setting is reversible with
-`codex-ops terminal-graphics --disable`.
+The setting is reversible with `codex-ops terminal-graphics --disable`. Ubuntu
+builds without `+SIXEL` are detected as incompatible instead of opening a blank
+Ultra panel; `codex-ops` then opens the bundled HD terminal automatically.
 
 Codex requires you to review newly installed hooks once with `/hooks`. This trust step is intentionally not bypassed by the installer.
 
@@ -62,7 +63,7 @@ codex-ops uninstall --purge
 
 | Profile | Rendering | Intended environment |
 | --- | --- | --- |
-| Ultra | High-resolution isometric rasterization via Kitty Graphics or Sixel | Kitty, Ghostty, WezTerm, Konsole, Windows Terminal, Contour, foot, and compatible terminals |
+| Ultra | High-resolution isometric rasterization via Kitty Graphics or verified Sixel | Bundled renderer, Kitty, Ghostty, WezTerm, Konsole, Windows Terminal, Contour, foot, and compatible terminals |
 | Unicode | True Color half-block software rendering | Modern terminals, tmux, and SSH |
 | Safe | Accessible text-first control center | Minimal or unknown terminals |
 

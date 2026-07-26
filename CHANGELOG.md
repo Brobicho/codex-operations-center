@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1 - 2026-07-26
+
+- Reject VTE builds that expose the Sixel preference without compiling `+SIXEL` support.
+- Open the HD scene automatically in a pinned, self-contained terminal renderer when needed.
+- Maximize the HD control-center window and retain Unicode/SSH/tmux fallbacks.
+- Remove the bundled renderer during clean uninstallation.
+
 ## 0.1.0 - 2026-07-26
 
 - Discover local Codex threads through `codex app-server`.

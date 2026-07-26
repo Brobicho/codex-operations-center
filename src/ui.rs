@@ -531,6 +531,7 @@ mod tests {
                 kitty_graphics: false,
                 sixel_graphics: false,
                 vte: false,
+                vte_sixel_build: false,
                 mouse: true,
                 tmux: false,
                 ssh: false,

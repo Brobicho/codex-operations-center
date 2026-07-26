@@ -78,6 +78,19 @@ pub fn uninstall(purge: bool) -> Result<()> {
         println!("No Codex Operations Center integration was registered.");
     }
 
+    if !purge {
+        let hd_terminal = paths::hd_terminal_dir()?;
+        if hd_terminal.exists() {
+            fs::remove_dir_all(&hd_terminal).with_context(|| {
+                format!(
+                    "unable to remove bundled terminal {}",
+                    hd_terminal.display()
+                )
+            })?;
+            println!("Bundled HD terminal removed.");
+        }
+    }
+
     if purge {
         let data = paths::data_dir()?;
         if data.exists() {
