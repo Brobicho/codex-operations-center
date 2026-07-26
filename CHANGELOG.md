@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2 - 2026-07-26
+
+- Bound HD camera zoom so project rooms cannot be pushed outside the viewport.
+- Apply wheel zoom only while the pointer is inside the 3D scene.
+- Add `0` as an immediate camera and zoom reset.
+
 ## 0.1.1 - 2026-07-26
 
 - Reject VTE builds that expose the Sixel preference without compiling `+SIXEL` support.

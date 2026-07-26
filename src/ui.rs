@@ -385,6 +385,8 @@ fn draw_footer(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
             Span::styled(" Caméra  ", Style::new().fg(MUTED)),
             Span::styled("MOLETTE/+−", Style::new().fg(Color::White)),
             Span::styled(" Zoom  ", Style::new().fg(MUTED)),
+            Span::styled("0", Style::new().fg(Color::White)),
+            Span::styled(" Recentrer  ", Style::new().fg(MUTED)),
             Span::styled(
                 format!("  {}", dashboard.capabilities.terminal),
                 Style::new().fg(Color::Rgb(54, 82, 116)),

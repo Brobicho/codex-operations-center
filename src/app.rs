@@ -19,6 +19,9 @@ use crate::codex::{self, ThreadSummary};
 use crate::events::{self, EventRecord};
 use crate::{kitty, ui};
 
+const MIN_CAMERA_ZOOM: f32 = 0.65;
+const MAX_CAMERA_ZOOM: f32 = 1.30;
+
 pub struct Dashboard {
     pub capabilities: Capabilities,
     pub profile: RenderingProfile,
@@ -141,16 +144,29 @@ impl Dashboard {
                 KeyCode::Left | KeyCode::Char('h') => self.camera_yaw -= 0.12,
                 KeyCode::Right | KeyCode::Char('l') => self.camera_yaw += 0.12,
                 KeyCode::Char('+') | KeyCode::Char('=') => {
-                    self.camera_zoom = (self.camera_zoom + 0.08).min(2.2)
+                    self.camera_zoom = (self.camera_zoom + 0.06).min(MAX_CAMERA_ZOOM)
                 }
-                KeyCode::Char('-') => self.camera_zoom = (self.camera_zoom - 0.08).max(0.55),
+                KeyCode::Char('-') => {
+                    self.camera_zoom = (self.camera_zoom - 0.06).max(MIN_CAMERA_ZOOM)
+                }
+                KeyCode::Char('0') => {
+                    self.camera_yaw = 0.35;
+                    self.camera_pitch = 0.22;
+                    self.camera_zoom = 1.0;
+                }
                 KeyCode::Char('r') => self.refresh(),
                 _ => {}
             },
             Event::Mouse(mouse) => match mouse.kind {
-                MouseEventKind::ScrollUp => self.camera_zoom = (self.camera_zoom + 0.08).min(2.2),
-                MouseEventKind::ScrollDown => {
-                    self.camera_zoom = (self.camera_zoom - 0.08).max(0.55)
+                MouseEventKind::ScrollUp
+                    if self.scene_area.contains((mouse.column, mouse.row).into()) =>
+                {
+                    self.camera_zoom = (self.camera_zoom + 0.06).min(MAX_CAMERA_ZOOM)
+                }
+                MouseEventKind::ScrollDown
+                    if self.scene_area.contains((mouse.column, mouse.row).into()) =>
+                {
+                    self.camera_zoom = (self.camera_zoom - 0.06).max(MIN_CAMERA_ZOOM)
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
                     let point = (mouse.column, mouse.row).into();
