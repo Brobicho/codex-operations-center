@@ -23,6 +23,9 @@ use crate::{kitty, ui};
 
 const MIN_CAMERA_ZOOM: f32 = 0.65;
 const MAX_CAMERA_ZOOM: f32 = 1.30;
+const CAMERA_SETTLE: Duration = Duration::from_millis(100);
+const PREVIEW_FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const FULL_FRAME_INTERVAL: Duration = Duration::from_millis(80);
 
 pub struct Dashboard {
     pub capabilities: Capabilities,
@@ -49,6 +52,7 @@ pub struct Dashboard {
     pub zoom_gesture: Option<(i8, Instant)>,
     pub scene_refresh_pending: bool,
     pub refresh_requested: bool,
+    pub final_frame_pending: bool,
 }
 
 impl Dashboard {
@@ -80,6 +84,7 @@ impl Dashboard {
             zoom_gesture: None,
             scene_refresh_pending: false,
             refresh_requested: false,
+            final_frame_pending: false,
         }
     }
 
@@ -171,7 +176,7 @@ impl Dashboard {
             return;
         }
         self.camera_zoom =
-            (self.camera_zoom + direction as f32 * 0.06).clamp(MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
+            (self.camera_zoom + direction as f32 * 0.04).clamp(MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
         self.zoom_gesture = Some((direction, now));
         self.last_camera_input = Some(now);
         self.scene_dirty = true;
@@ -298,7 +303,7 @@ pub fn run(capabilities: Capabilities, profile: RenderingProfile) -> Result<()> 
 
     let mut guard = TerminalGuard::enter()?;
     let mut dashboard = Dashboard::new(capabilities, profile);
-    let tick_rate = Duration::from_millis(100);
+    let tick_rate = Duration::from_millis(16);
     let mut ui_dirty = true;
     let mut last_ui_frame = Instant::now() - Duration::from_secs(1);
     let (refresh_sender, refresh_receiver) = mpsc::channel();
@@ -308,7 +313,7 @@ pub fn run(capabilities: Capabilities, profile: RenderingProfile) -> Result<()> 
         let frame_started = Instant::now();
         let wait = tick_rate.saturating_sub(frame_started.elapsed());
         if event::poll(wait)? {
-            loop {
+            for _ in 0..64 {
                 let event = event::read()?;
                 let affects_ui = !matches!(
                     event,
@@ -363,20 +368,31 @@ pub fn run(capabilities: Capabilities, profile: RenderingProfile) -> Result<()> 
             ui_dirty = false;
             last_ui_frame = Instant::now();
         }
-        if dashboard.profile == RenderingProfile::Ultra
-            && !dashboard.scene_area.is_empty()
-            && dashboard.scene_dirty
-            && !dashboard.dragging
-            && dashboard
-                .last_camera_input
-                .is_none_or(|last_input| last_input.elapsed() >= Duration::from_millis(80))
-            && dashboard.last_ultra_frame.elapsed() >= Duration::from_millis(80)
-        {
-            kitty::draw_scene(&dashboard)?;
-            dashboard.last_ultra_frame = Instant::now();
-            dashboard.scene_dirty = false;
-            dashboard.last_camera_input = None;
-            dashboard.zoom_gesture = None;
+        if dashboard.profile == RenderingProfile::Ultra && !dashboard.scene_area.is_empty() {
+            let camera_active = dashboard.dragging
+                || dashboard
+                    .last_camera_input
+                    .is_some_and(|last_input| last_input.elapsed() < CAMERA_SETTLE);
+            let preview_requested = dashboard.scene_dirty && camera_active;
+            let full_requested =
+                !camera_active && (dashboard.scene_dirty || dashboard.final_frame_pending);
+            let frame_interval = if preview_requested {
+                PREVIEW_FRAME_INTERVAL
+            } else {
+                FULL_FRAME_INTERVAL
+            };
+            if (preview_requested || full_requested)
+                && dashboard.last_ultra_frame.elapsed() >= frame_interval
+            {
+                kitty::draw_scene(&dashboard, preview_requested)?;
+                dashboard.last_ultra_frame = Instant::now();
+                dashboard.scene_dirty = false;
+                dashboard.final_frame_pending = preview_requested;
+                if !preview_requested {
+                    dashboard.last_camera_input = None;
+                    dashboard.zoom_gesture = None;
+                }
+            }
         }
     }
     if dashboard.profile == RenderingProfile::Ultra {

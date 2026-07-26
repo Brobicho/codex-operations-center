@@ -550,7 +550,7 @@ struct Canvas {
     pixels: Vec<u8>,
 }
 
-type BackgroundFrame = Option<(usize, usize, Vec<u8>)>;
+type BackgroundFrame = (usize, usize, Vec<u8>);
 
 impl Canvas {
     fn new(width: usize, height: usize) -> Self {
@@ -562,14 +562,15 @@ impl Canvas {
     }
 
     fn with_background(width: usize, height: usize) -> Self {
-        static BACKGROUND: OnceLock<Mutex<BackgroundFrame>> = OnceLock::new();
+        static BACKGROUNDS: OnceLock<Mutex<Vec<BackgroundFrame>>> = OnceLock::new();
         if width == 0 || height == 0 {
             return Self::new(width, height);
         }
-        let cache = BACKGROUND.get_or_init(|| Mutex::new(None));
+        let cache = BACKGROUNDS.get_or_init(|| Mutex::new(Vec::new()));
         if let Ok(cached) = cache.lock()
-            && let Some((cached_width, cached_height, pixels)) = cached.as_ref()
-            && (*cached_width, *cached_height) == (width, height)
+            && let Some((_, _, pixels)) = cached.iter().find(|(cached_width, cached_height, _)| {
+                (*cached_width, *cached_height) == (width, height)
+            })
         {
             return Self {
                 width,
@@ -581,7 +582,10 @@ impl Canvas {
         canvas.background();
         canvas.technical_grid();
         if let Ok(mut cached) = cache.lock() {
-            *cached = Some((width, height, canvas.pixels.clone()));
+            if cached.len() >= 4 {
+                cached.remove(0);
+            }
+            cached.push((width, height, canvas.pixels.clone()));
         }
         canvas
     }

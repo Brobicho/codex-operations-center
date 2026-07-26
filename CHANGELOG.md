@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5 - 2026-07-26
+
+- Render responsive low-latency previews while dragging and zooming, then sharpen on release.
+- Keep preview and full-resolution scene backgrounds cached independently.
+- Add distinct activity colors and markers for commands, patches, lifecycle, web, and alerts.
+
 ## 0.1.4 - 2026-07-26
 
 - Stop regenerating the HD framebuffer for unrelated terminal events and unchanged refreshes.
