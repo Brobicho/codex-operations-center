@@ -530,6 +530,7 @@ mod tests {
                 true_color: true,
                 kitty_graphics: false,
                 sixel_graphics: false,
+                vte: false,
                 mouse: true,
                 tmux: false,
                 ssh: false,

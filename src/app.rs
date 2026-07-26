@@ -45,7 +45,7 @@ pub struct Dashboard {
 impl Dashboard {
     fn new(capabilities: Capabilities, profile: RenderingProfile) -> Self {
         let threads = codex::list_threads(250).unwrap_or_default();
-        let events = events::recent(500).unwrap_or_default();
+        let events = events::recent_for_threads(&threads, 500).unwrap_or_default();
         Self {
             capabilities,
             profile,
@@ -79,7 +79,7 @@ impl Dashboard {
             }
             Err(error) => self.status_message = Some(format!("Codex indisponible : {error:#}")),
         }
-        if let Ok(events) = events::recent(500) {
+        if let Ok(events) = events::recent_for_threads(&self.threads, 500) {
             self.events = events;
         }
         self.last_refresh = Instant::now();

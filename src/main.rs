@@ -41,6 +41,12 @@ enum Command {
     Emit,
     /// Install the global Codex lifecycle integration.
     Integrate,
+    /// Enable high-resolution Sixel graphics in the active GNOME Terminal profile.
+    TerminalGraphics {
+        /// Revert the GNOME Terminal Sixel preference instead of enabling it.
+        #[arg(long)]
+        disable: bool,
+    },
     /// Remove files and integration owned by Codex Operations Center.
     Uninstall {
         /// Also remove locally collected events and settings.
@@ -64,6 +70,9 @@ fn main() -> Result<()> {
         Some(Command::Doctor) => capabilities::print_doctor(),
         Some(Command::Emit) => events::ingest_stdin(),
         Some(Command::Integrate) => hooks::install(),
+        Some(Command::TerminalGraphics { disable }) => {
+            capabilities::configure_terminal_graphics(disable)
+        }
         Some(Command::Uninstall { purge }) => hooks::uninstall(purge),
         Some(Command::Snapshot {
             output,

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::paths;
+use crate::{codex::ThreadSummary, runtime};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,6 +96,22 @@ pub fn recent(limit: usize) -> Result<Vec<EventRecord>> {
         .map_while(Result::ok)
         .filter_map(|line| serde_json::from_str(&line).ok())
         .collect();
+    if events.len() > limit {
+        events.drain(..events.len() - limit);
+    }
+    Ok(events)
+}
+
+pub fn recent_for_threads(threads: &[ThreadSummary], limit: usize) -> Result<Vec<EventRecord>> {
+    let mut events = recent(limit)?;
+    events.extend(runtime::observed_events(threads, 18));
+    events.sort_by_key(|event| event.received_at);
+    events.dedup_by(|left, right| {
+        left.received_at == right.received_at
+            && left.session_id == right.session_id
+            && left.event == right.event
+            && left.tool_name == right.tool_name
+    });
     if events.len() > limit {
         events.drain(..events.len() - limit);
     }

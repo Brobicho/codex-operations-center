@@ -1,5 +1,6 @@
 use std::sync::OnceLock;
 
+use fontdue::layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle};
 use glam::{Vec2, Vec3};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -26,6 +27,7 @@ pub struct SceneNode {
     pub radius: f32,
     pub color: Vec3,
     pub label: String,
+    pub state_label: String,
     pub thread_index: usize,
     pub active: bool,
     pub attention: bool,
@@ -114,6 +116,16 @@ impl Scene {
                     .map(ToOwned::to_owned)
                     .unwrap_or_else(|| project_name(&thread.cwd));
                 let label = label_source.chars().take(18).collect();
+                let state_label = match thread.status {
+                    ThreadStatus::Active { .. } | ThreadStatus::ObservedRunning => "EN COURS",
+                    ThreadStatus::ObservedOpen => "SESSION OUVERTE",
+                    ThreadStatus::RecentlyActive => "ACTIVITÉ RÉCENTE",
+                    ThreadStatus::NeedsAttention => "INTERVENTION",
+                    ThreadStatus::SystemError => "ERREUR",
+                    ThreadStatus::Idle => "DISPONIBLE",
+                    ThreadStatus::NotLoaded => "ENREGISTRÉE",
+                }
+                .to_owned();
                 nodes.push(SceneNode {
                     thread_id: thread.id.clone(),
                     parent_thread_id: thread.parent_thread_id.clone(),
@@ -125,6 +137,7 @@ impl Scene {
                     radius: 0.035,
                     color: status_color,
                     label,
+                    state_label,
                     thread_index,
                     active,
                     attention,
@@ -162,6 +175,9 @@ impl Scene {
             self.draw_workstation(&mut canvas, node);
         }
         self.draw_connections(&mut canvas);
+        if width >= 320 {
+            self.draw_raster_labels(&mut canvas);
+        }
         canvas.pixels
     }
 
@@ -429,6 +445,34 @@ impl Scene {
         }
     }
 
+    fn draw_raster_labels(&self, canvas: &mut Canvas) {
+        let room_size = (canvas.width as f32 / 62.0).clamp(13.0, 22.0);
+        let agent_size = (canvas.width as f32 / 78.0).clamp(11.0, 17.0);
+        for room in &self.rooms {
+            let center = canvas.point(self.view_point(room.center));
+            let y =
+                center.y - room.half_height * self.zoom * canvas.height as f32 - room_size * 3.2;
+            canvas.label(
+                Vec2::new(center.x, y.max(8.0)),
+                &room.label,
+                room.color,
+                room_size,
+                false,
+            );
+        }
+        for node in &self.nodes {
+            let center = canvas.point(self.view_point(node.position.truncate()));
+            let text = format!("{}  ·  {}", node.label, node.state_label);
+            canvas.label(
+                Vec2::new(center.x, center.y - canvas.width as f32 * 0.075),
+                &text,
+                node.color,
+                agent_size,
+                node.thread_index == self.selected,
+            );
+        }
+    }
+
     fn view_point(&self, point: Vec2) -> Vec2 {
         let center = Vec2::splat(0.5);
         center
@@ -611,6 +655,76 @@ impl Canvas {
         for y in y0..=y1 {
             for x in x0..=x1 {
                 self.set(x, y, color, 1.0);
+            }
+        }
+    }
+
+    fn polygon_outline(&mut self, points: &[Vec2], color: Vec3) {
+        for index in 0..points.len() {
+            self.glow_line(points[index], points[(index + 1) % points.len()], color, 1);
+        }
+    }
+
+    fn label(&mut self, top_center: Vec2, text: &str, color: Vec3, size: f32, selected: bool) {
+        let font = ui_font();
+        let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+        layout.reset(&LayoutSettings::default());
+        layout.append(&[font], &TextStyle::new(text, size, 0));
+        let width = layout
+            .glyphs()
+            .iter()
+            .map(|glyph| glyph.x + glyph.width as f32)
+            .fold(0.0_f32, f32::max)
+            .ceil();
+        let height = (size * 1.45).ceil();
+        let padding_x = (size * 0.72).ceil();
+        let cut = (size * 0.42).ceil();
+        let left = top_center.x - width * 0.5 - padding_x;
+        let right = top_center.x + width * 0.5 + padding_x;
+        let top = top_center.y;
+        let bottom = top + height;
+        let panel = [
+            Vec2::new(left + cut, top),
+            Vec2::new(right - cut, top),
+            Vec2::new(right, top + cut),
+            Vec2::new(right, bottom - cut),
+            Vec2::new(right - cut, bottom),
+            Vec2::new(left + cut, bottom),
+            Vec2::new(left, bottom - cut),
+            Vec2::new(left, top + cut),
+        ];
+        self.polygon(&panel, Vec3::new(0.006, 0.018, 0.042));
+        self.polygon_outline(
+            &panel,
+            if selected {
+                Vec3::new(1.0, 0.72, 0.22)
+            } else {
+                color * 0.75
+            },
+        );
+
+        let text_x = top_center.x - width * 0.5;
+        let text_y = top + (height - size) * 0.28;
+        layout.reset(&LayoutSettings {
+            x: text_x,
+            y: text_y,
+            ..LayoutSettings::default()
+        });
+        layout.append(&[font], &TextStyle::new(text, size, 0));
+        for glyph in layout.glyphs() {
+            let (_, bitmap) = font.rasterize_config(glyph.key);
+            for y in 0..glyph.height {
+                for x in 0..glyph.width {
+                    let alpha = bitmap[y * glyph.width + x] as f32 / 255.0;
+                    if alpha > 0.01 {
+                        self.set(
+                            glyph.x.round() as isize + x as isize,
+                            glyph.y.round() as isize + y as isize,
+                            Vec3::new(0.90, 0.96, 1.0),
+                            alpha,
+                        );
+                    }
+                }
             }
         }
     }
@@ -821,6 +935,17 @@ fn decode_sprite(bytes: &[u8], name: &str) -> Sprite {
         height: cropped.height() as usize,
         rgba: cropped.into_raw(),
     }
+}
+
+fn ui_font() -> &'static fontdue::Font {
+    static FONT: OnceLock<fontdue::Font> = OnceLock::new();
+    FONT.get_or_init(|| {
+        fontdue::Font::from_bytes(
+            include_bytes!("../assets/fonts/DejaVuSans-Bold.ttf") as &[u8],
+            fontdue::FontSettings::default(),
+        )
+        .expect("embedded UI font must be valid")
+    })
 }
 
 fn edge(a: Vec2, b: Vec2, point: Vec2) -> f32 {

@@ -24,6 +24,16 @@ codex-ops doctor
 codex-ops
 ```
 
+GNOME Terminal users can enable its built-in Sixel pixel renderer once for the
+full-resolution scene (the command changes only the active terminal profile):
+
+```bash
+codex-ops terminal-graphics
+```
+
+Close and reopen the terminal afterward. The setting is reversible with
+`codex-ops terminal-graphics --disable`.
+
 Codex requires you to review newly installed hooks once with `/hooks`. This trust step is intentionally not bypassed by the installer.
 
 To remove the application while retaining captured history:
@@ -68,7 +78,8 @@ codex-ops --graphics safe
 
 - `codex app-server` is used to list stored local threads through its documented JSON-RPC API.
 - Global Codex lifecycle hooks provide live events for every trusted local project.
-- Raw transcript files are not treated as a stable API.
+- When a Codex surface does not emit hooks, a schema-tolerant, read-only adapter observes the local rollout tail and open process handles.
+- That adapter retains event metadata only; prompt text, assistant messages, command arguments, tool outputs, and reasoning are never copied into the Operations Center event store.
 - Cloud and other-machine sessions require separate collectors and are not presented as locally observed activity.
 - Captured lifecycle events stay on the local machine; the project includes no telemetry.
 
@@ -78,6 +89,7 @@ codex-ops --graphics safe
 codex-ops                  # launch the operations center
 codex-ops doctor           # inspect Codex and terminal capabilities
 codex-ops integrate        # install global lifecycle hooks
+codex-ops terminal-graphics # enable Sixel in the active GNOME Terminal profile
 codex-ops snapshot         # render a PNG preview of the live scene
 codex-ops uninstall        # remove only the owned integration and application
 codex-ops uninstall --purge
@@ -99,19 +111,20 @@ The integration writes its state beneath `~/.local/share/codex-ops` on Linux and
 ## Architecture
 
 ```text
-Codex app-server ────── stored local thread inventory
-Codex global hooks ──── live lifecycle events
-             │
-             ▼
-     normalized event model
-             │
-      ┌──────┴─────────┐
-      ▼                ▼
-operations UI     software 3D scene
-      │                │
-      └──────┬─────────┘
-             ▼
- Kitty pixels / Sixel / Unicode half-blocks / safe text
+Codex app-server ───────────── stored local thread inventory
+Codex global hooks ─────────── precise lifecycle events
+Local rollout/process adapter ─ cross-surface live observation
+                    │
+                    ▼
+            normalized event model
+                    │
+             ┌──────┴─────────┐
+             ▼                ▼
+       operations UI     software 3D scene
+             │                │
+             └──────┬─────────┘
+                    ▼
+        Kitty pixels / Sixel / Unicode / safe text
 ```
 
 The visual state is derived only from observed Codex information. Colors distinguish projects and actual states; they do not represent invented skill or performance scores.
@@ -130,7 +143,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for isolated integration testing.
 
 ## Status
 
-The initial public release includes local thread discovery, event normalization, terminal capability detection, reversible global-hook installation, mouse interaction, a software isometric renderer, Kitty and Sixel pixel output, True Color Unicode fallback, PNG snapshots, and release automation.
+The initial public release includes cross-process task detection, a privacy-preserving activity adapter, event normalization, terminal capability detection, reversible global-hook installation, mouse interaction, an HD asset-composited isometric renderer, Kitty and Sixel pixel output, True Color Unicode fallback, PNG snapshots, and release automation.
 
 ## License
 
