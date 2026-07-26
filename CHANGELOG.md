@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 - 2026-07-26
+
+- Ignore residual unmodified wheel events when the HD terminal window opens.
+- Require Ctrl+wheel for deliberate mouse zoom; keyboard zoom remains unchanged.
+
 ## 0.1.2 - 2026-07-26
 
 - Bound HD camera zoom so project rooms cannot be pushed outside the viewport.
