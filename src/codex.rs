@@ -28,7 +28,13 @@ pub enum ThreadStatus {
     NotLoaded,
     Idle,
     SystemError,
-    Active { active_flags: Vec<String> },
+    Active {
+        active_flags: Vec<String>,
+    },
+    #[serde(skip)]
+    RecentlyActive,
+    #[serde(skip)]
+    NeedsAttention,
 }
 
 pub fn list_threads(limit: u32) -> Result<Vec<ThreadSummary>> {

@@ -26,6 +26,15 @@ pub fn manifest_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("install-manifest.json"))
 }
 
+pub fn launcher_path() -> Result<PathBuf> {
+    let base = BaseDirs::new().context("unable to locate the user home directory")?;
+    #[cfg(windows)]
+    let name = "codex-ops.exe";
+    #[cfg(not(windows))]
+    let name = "codex-ops";
+    Ok(base.home_dir().join(".local/bin").join(name))
+}
+
 pub fn codex_home() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("CODEX_HOME") {
         return Ok(PathBuf::from(path));

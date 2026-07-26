@@ -1,11 +1,16 @@
+mod app;
 mod capabilities;
 mod codex;
 mod events;
 mod hooks;
+mod kitty;
 mod paths;
+mod scene;
+mod ui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(name = "codex-ops", version, about)]
@@ -41,6 +46,15 @@ enum Command {
         #[arg(long)]
         purge: bool,
     },
+    /// Render a standalone PNG preview of the current operations scene.
+    Snapshot {
+        #[arg(short, long, default_value = "codex-ops-preview.png")]
+        output: PathBuf,
+        #[arg(long, default_value_t = 960)]
+        width: u32,
+        #[arg(long, default_value_t = 540)]
+        height: u32,
+    },
 }
 
 fn main() -> Result<()> {
@@ -50,6 +64,11 @@ fn main() -> Result<()> {
         Some(Command::Emit) => events::ingest_stdin(),
         Some(Command::Integrate) => hooks::install(),
         Some(Command::Uninstall { purge }) => hooks::uninstall(purge),
+        Some(Command::Snapshot {
+            output,
+            width,
+            height,
+        }) => kitty::save_snapshot(&output, width, height),
         None => run_dashboard(cli.graphics),
     }
 }
@@ -57,16 +76,5 @@ fn main() -> Result<()> {
 fn run_dashboard(graphics: GraphicsMode) -> Result<()> {
     let capabilities = capabilities::Capabilities::detect();
     let selected = capabilities.select(graphics);
-    let threads = codex::list_threads(100).unwrap_or_else(|error| {
-        eprintln!("Codex app-server unavailable: {error:#}");
-        Vec::new()
-    });
-    let live_events = events::recent(100).unwrap_or_default();
-
-    println!("Codex Operations Center");
-    println!("rendering profile: {selected:?}");
-    println!("local Codex threads: {}", threads.len());
-    println!("recent lifecycle events: {}", live_events.len());
-    println!("Run `codex-ops integrate` to enable live lifecycle events.");
-    Ok(())
+    app::run(capabilities, selected)
 }

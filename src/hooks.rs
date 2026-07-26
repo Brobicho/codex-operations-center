@@ -26,6 +26,8 @@ const EVENTS: &[&str] = &[
 struct InstallManifest {
     hooks_path: String,
     hook_command: String,
+    executable_path: Option<String>,
+    launcher_path: Option<String>,
 }
 
 pub fn install() -> Result<()> {
@@ -43,6 +45,8 @@ pub fn install() -> Result<()> {
         &serde_json::to_vec_pretty(&InstallManifest {
             hooks_path: path.display().to_string(),
             hook_command: command,
+            executable_path: Some(executable.display().to_string()),
+            launcher_path: owned_launcher(&executable).map(|path| path.display().to_string()),
         })?,
     )?;
 
@@ -53,9 +57,21 @@ pub fn install() -> Result<()> {
 
 pub fn uninstall(purge: bool) -> Result<()> {
     let manifest_path = paths::manifest_path()?;
+    let mut owned_executable = None;
     if manifest_path.exists() {
         let manifest: InstallManifest = serde_json::from_slice(&fs::read(&manifest_path)?)?;
         remove_from(Path::new(&manifest.hooks_path), &manifest.hook_command)?;
+        if let Some(launcher) = manifest.launcher_path.as_deref() {
+            let launcher = Path::new(launcher);
+            if launcher.exists() {
+                fs::remove_file(launcher)
+                    .with_context(|| format!("unable to remove launcher {}", launcher.display()))?;
+            }
+        }
+        owned_executable = manifest
+            .executable_path
+            .map(std::path::PathBuf::from)
+            .filter(|path| executable_is_owned(path));
         fs::remove_file(&manifest_path)?;
         println!("Codex integration removed.");
     } else {
@@ -69,8 +85,31 @@ pub fn uninstall(purge: bool) -> Result<()> {
                 .with_context(|| format!("unable to remove {}", data.display()))?;
             println!("Local Codex Operations Center data removed.");
         }
+    } else if let Some(executable) = owned_executable {
+        #[cfg(not(windows))]
+        fs::remove_file(&executable)
+            .with_context(|| format!("unable to remove {}", executable.display()))?;
+        #[cfg(windows)]
+        println!(
+            "Remove {} after this process exits to finish uninstalling.",
+            executable.display()
+        );
     }
     Ok(())
+}
+
+fn owned_launcher(executable: &Path) -> Option<std::path::PathBuf> {
+    let launcher = paths::launcher_path().ok()?;
+    let target = fs::canonicalize(&launcher).ok()?;
+    let executable = fs::canonicalize(executable).ok()?;
+    (target == executable).then_some(launcher)
+}
+
+fn executable_is_owned(executable: &Path) -> bool {
+    let Ok(data_dir) = paths::data_dir() else {
+        return false;
+    };
+    executable.parent() == Some(data_dir.as_path())
 }
 
 fn install_into(path: &Path, command: &str) -> Result<()> {
