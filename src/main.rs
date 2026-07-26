@@ -113,9 +113,9 @@ fn launch_hd_terminal() -> Result<bool> {
     }
     let executable = std::env::current_exe().context("unable to locate codex-ops")?;
     let cwd = std::env::current_dir().context("unable to locate the working directory")?;
-    ProcessCommand::new(&terminal)
+    println!("Opening the HD operations center in a dedicated window...");
+    let status = ProcessCommand::new(&terminal)
         .args([
-            "--detach",
             "--start-as=maximized",
             "--title",
             "Codex Operations Center",
@@ -130,8 +130,11 @@ fn launch_hd_terminal() -> Result<bool> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
+        .status()
         .with_context(|| format!("unable to start bundled terminal {}", terminal.display()))?;
-    println!("Opening the HD operations center in its compatible terminal...");
+    anyhow::ensure!(
+        status.success(),
+        "the HD operations center exited with status {status}"
+    );
     Ok(true)
 }
