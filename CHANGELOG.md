@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 - 2026-07-27
+
+- Recenter the camera smoothly on the room selected by keyboard, room click, or conversation selection.
+- Expand the room inspector with the current action, exact command, execution time, tool, and working directory.
+- Recognize qualified and function-call command envelopes emitted by newer Codex sessions.
+- Keep prompt text, assistant messages, tool output, and reasoning content outside the activity adapter.
+
 ## 0.2.0 - 2026-07-27
 
 - Move room focus spatially with the arrow keys while keeping camera movement on drag and Shift+arrow keys.

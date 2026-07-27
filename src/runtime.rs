@@ -76,11 +76,11 @@ struct ObservedRuntime {
     metrics: ThreadRuntime,
 }
 
-/// Builds a privacy-preserving activity feed from Codex's local rollout files.
+/// Builds a local activity feed from Codex's local rollout files.
 ///
-/// This is a compatibility adapter for Codex surfaces which do not emit hooks.
-/// It deliberately retains only event metadata: prompt contents, assistant
-/// messages, command arguments and tool outputs never leave the rollout file.
+/// Prompt contents, assistant messages and tool outputs are ignored. Exact
+/// shell commands and their working directory are read for the local live
+/// inspector, but this compatibility path does not persist another copy.
 pub fn observed_events(threads: &[ThreadSummary], per_session: usize) -> Vec<EventRecord> {
     let Ok(session_root) = crate::paths::codex_home().map(|path| path.join("sessions")) else {
         return Vec::new();
@@ -176,6 +176,10 @@ fn read_runtime(path: &Path) -> std::io::Result<ObservedRuntime> {
                         .or_else(|| event_timestamp(&value));
                     observed.metrics.actions_this_turn = 0;
                     observed.metrics.last_action = Some("Analyse la demande".to_owned());
+                    observed.metrics.last_action_at = event_timestamp(&value);
+                    observed.metrics.last_tool = None;
+                    observed.metrics.last_command = None;
+                    observed.metrics.last_command_workdir = None;
                 }
                 "task_complete" | "turn_aborted" => {
                     observed.lifecycle = Lifecycle::Complete;
@@ -196,6 +200,10 @@ fn read_runtime(path: &Path) -> std::io::Result<ObservedRuntime> {
                             "Tâche terminée".to_owned()
                         },
                     );
+                    observed.metrics.last_action_at = event_timestamp(&value);
+                    observed.metrics.last_tool = None;
+                    observed.metrics.last_command = None;
+                    observed.metrics.last_command_workdir = None;
                 }
                 "token_count" => {
                     observed.metrics.context_tokens = value
@@ -212,7 +220,7 @@ fn read_runtime(path: &Path) -> std::io::Result<ObservedRuntime> {
             }
         }
         if turn_running
-            && let Some((_, _, summary, _)) = activity_summary(&value)
+            && let Some((_, tool_name, summary, payload)) = activity_summary(&value)
             && !matches!(
                 value.pointer("/payload/type").and_then(Value::as_str),
                 Some("task_started" | "task_complete" | "turn_aborted")
@@ -221,6 +229,16 @@ fn read_runtime(path: &Path) -> std::io::Result<ObservedRuntime> {
             observed.metrics.actions_this_turn =
                 observed.metrics.actions_this_turn.saturating_add(1);
             observed.metrics.last_action = Some(summary);
+            observed.metrics.last_action_at = event_timestamp(&value);
+            observed.metrics.last_tool = tool_name;
+            observed.metrics.last_command = payload
+                .get("command")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            observed.metrics.last_command_workdir = payload
+                .get("workdir")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
         }
     }
     Ok(observed)
@@ -305,12 +323,15 @@ fn activity_summary(value: &Value) -> Option<(String, Option<String>, String, Va
             _ => None,
         },
         "response_item"
-            if value.pointer("/payload/type").and_then(Value::as_str)
-                == Some("custom_tool_call") =>
+            if matches!(
+                value.pointer("/payload/type").and_then(Value::as_str),
+                Some("custom_tool_call" | "function_call")
+            ) =>
         {
             let tool = value.pointer("/payload/name").and_then(Value::as_str)?;
             let command = custom_call_command(value);
-            let summary = match tool {
+            let normalized_tool = tool.rsplit(['.', ':']).next().unwrap_or(tool);
+            let summary = match normalized_tool {
                 "exec" | "exec_command" => command
                     .as_deref()
                     .map(summarize_command)
@@ -321,9 +342,15 @@ fn activity_summary(value: &Value) -> Option<(String, Option<String>, String, Va
                 _ if tool.starts_with("mcp__") => "Consulte un service connecté".to_owned(),
                 _ => return None,
             };
-            let payload = command
-                .map(|command| serde_json::json!({ "command": command }))
-                .unwrap_or(Value::Null);
+            let workdir = custom_call_field(value, "workdir");
+            let payload = match (command, workdir) {
+                (Some(command), Some(workdir)) => {
+                    serde_json::json!({ "command": command, "workdir": workdir })
+                }
+                (Some(command), None) => serde_json::json!({ "command": command }),
+                (None, Some(workdir)) => serde_json::json!({ "workdir": workdir }),
+                (None, None) => Value::Null,
+            };
             Some((
                 "ToolStarted".to_owned(),
                 Some(tool.to_owned()),
@@ -379,29 +406,28 @@ fn changed_files_summary(value: &Value) -> String {
 }
 
 fn custom_call_command(value: &Value) -> Option<String> {
+    custom_call_field(value, "cmd").or_else(|| custom_call_field(value, "command"))
+}
+
+fn custom_call_field(value: &Value, key: &str) -> Option<String> {
     for pointer in ["/payload/input", "/payload/arguments"] {
         let Some(input) = value.pointer(pointer).and_then(Value::as_str) else {
             continue;
         };
         if let Ok(parsed) = serde_json::from_str::<Value>(input)
-            && let Some(command) = parsed
-                .get("cmd")
-                .or_else(|| parsed.get("command"))
-                .and_then(Value::as_str)
+            && let Some(command) = parsed.get(key).and_then(Value::as_str)
         {
             return Some(command.to_owned());
         }
-        for key in ["cmd", "command"] {
-            let needle = format!("\"{key}\":");
-            let Some(rest) = input.split_once(&needle).map(|(_, rest)| rest.trim_start()) else {
-                continue;
-            };
-            if let Some(Ok(command)) = serde_json::Deserializer::from_str(rest)
-                .into_iter::<String>()
-                .next()
-            {
-                return Some(command);
-            }
+        let needle = format!("\"{key}\":");
+        let Some(rest) = input.split_once(&needle).map(|(_, rest)| rest.trim_start()) else {
+            continue;
+        };
+        if let Some(Ok(command)) = serde_json::Deserializer::from_str(rest)
+            .into_iter::<String>()
+            .next()
+        {
+            return Some(command);
         }
     }
     None
@@ -557,7 +583,7 @@ mod tests {
         .unwrap();
         writeln!(
             file,
-            r#"{{"timestamp":"2026-07-26T20:00:02Z","type":"response_item","payload":{{"type":"custom_tool_call","name":"exec","input":"{{\"cmd\":\"cargo test\"}}"}}}}"#
+            r#"{{"timestamp":"2026-07-26T20:00:02Z","type":"response_item","payload":{{"type":"custom_tool_call","name":"exec","input":"{{\"cmd\":\"cargo test\",\"workdir\":\"/work/project\"}}"}}}}"#
         )
         .unwrap();
         writeln!(
@@ -579,6 +605,13 @@ mod tests {
             observed.metrics.last_action.as_deref(),
             Some("Commande · cargo test")
         );
+        assert_eq!(observed.metrics.last_command.as_deref(), Some("cargo test"));
+        assert_eq!(
+            observed.metrics.last_command_workdir.as_deref(),
+            Some("/work/project")
+        );
+        assert_eq!(observed.metrics.last_tool.as_deref(), Some("exec"));
+        assert_eq!(observed.metrics.last_action_at, Some(1785096002));
     }
 
     #[test]
@@ -634,6 +667,31 @@ mod tests {
                 .pointer("/command")
                 .and_then(Value::as_str),
             Some("cargo test --locked")
+        );
+        assert_eq!(
+            command_activity
+                .3
+                .pointer("/workdir")
+                .and_then(Value::as_str),
+            Some("/work/project")
+        );
+
+        let qualified = serde_json::json!({
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "functions.exec_command",
+                "arguments": "{\"cmd\":\"git status --short\",\"workdir\":\"/work/project\"}"
+            }
+        });
+        let qualified_activity = activity_summary(&qualified).unwrap();
+        assert_eq!(qualified_activity.2, "Commande · git status --short");
+        assert_eq!(
+            qualified_activity
+                .3
+                .pointer("/command")
+                .and_then(Value::as_str),
+            Some("git status --short")
         );
 
         let patch = serde_json::json!({
