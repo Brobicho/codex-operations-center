@@ -54,6 +54,7 @@ pub struct Scene {
     pub time: f32,
     pub selected: usize,
     pub focused_room: usize,
+    pub camera_focus: Vec2,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -209,6 +210,7 @@ impl Scene {
             time,
             selected,
             focused_room,
+            camera_focus: Vec2::splat(0.5),
         }
     }
 
@@ -664,7 +666,7 @@ impl Scene {
     fn view_point(&self, point: Vec2) -> Vec2 {
         let center = Vec2::splat(0.5);
         center
-            + (point - center) * self.zoom
+            + (point - self.camera_focus) * self.zoom
             + Vec2::new((self.yaw - 0.35) * 0.055, (self.pitch - 0.22) * 0.08)
     }
 }
@@ -1345,6 +1347,7 @@ mod tests {
             time: 0.0,
             selected: 0,
             focused_room: 0,
+            camera_focus: Vec2::splat(0.5),
         };
         let pixels = scene.render_rgba(32, 20);
         assert_eq!(pixels.len(), 32 * 20 * 4);
@@ -1371,5 +1374,13 @@ mod tests {
         );
         assert_eq!(scene.next_room(0, Vec2::Y), 1);
         assert_eq!(scene.room_target(1), Some(RoomTarget::Options));
+
+        scene.camera_focus = scene.rooms[1].center;
+        assert!(
+            scene
+                .view_point(scene.rooms[1].center)
+                .distance(Vec2::splat(0.5))
+                < 0.001
+        );
     }
 }

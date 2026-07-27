@@ -71,6 +71,13 @@ impl EventRecord {
             .filter_map(Value::as_str)
             .collect()
     }
+
+    pub fn working_directory(&self) -> Option<&str> {
+        self.payload
+            .get("workdir")
+            .or_else(|| self.payload.pointer("/tool_input/workdir"))
+            .and_then(Value::as_str)
+    }
 }
 
 pub fn ingest_stdin() -> Result<()> {

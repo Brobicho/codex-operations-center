@@ -38,6 +38,8 @@ pub struct Dashboard {
     pub camera_yaw: f32,
     pub camera_pitch: f32,
     pub camera_zoom: f32,
+    pub camera_focus: glam::Vec2,
+    pub camera_focus_target: glam::Vec2,
     pub started_at: Instant,
     pub last_refresh: Instant,
     pub scene_area: ratatui::layout::Rect,
@@ -81,6 +83,8 @@ impl Dashboard {
             camera_yaw: 0.35,
             camera_pitch: 0.22,
             camera_zoom: 1.0,
+            camera_focus: glam::Vec2::splat(0.5),
+            camera_focus_target: glam::Vec2::splat(0.5),
             started_at: Instant::now(),
             last_refresh: Instant::now(),
             scene_area: ratatui::layout::Rect::default(),
@@ -113,7 +117,7 @@ impl Dashboard {
     }
 
     pub fn scene(&self) -> Scene {
-        Scene::from_threads_with_options(
+        let mut scene = Scene::from_threads_with_options(
             &self.effective_threads(),
             self.camera_yaw,
             self.camera_pitch,
@@ -122,12 +126,19 @@ impl Dashboard {
             self.selected,
             self.focused_room,
             self.settings.show_resting_agents,
-        )
+        );
+        scene.camera_focus = self.camera_focus;
+        scene
     }
 
     fn activate_room(&mut self, room_index: usize) {
         let scene = self.scene();
         self.focused_room = room_index.min(scene.rooms.len().saturating_sub(1));
+        if let Some(center) = scene.rooms.get(self.focused_room).map(|room| room.center) {
+            self.camera_focus_target = self.camera_target_for(center);
+            self.last_camera_input = Some(Instant::now());
+            self.final_frame_pending = true;
+        }
         match scene.room_target(self.focused_room) {
             Some(RoomTarget::Thread(index)) => {
                 self.selected = index;
@@ -150,10 +161,40 @@ impl Dashboard {
     }
 
     fn sync_room_to_thread(&mut self) {
-        if let Some(room) = self.scene().room_for_thread(self.selected) {
+        let scene = self.scene();
+        if let Some(room) = scene.room_for_thread(self.selected) {
             self.focused_room = room;
             self.options_open = false;
+            if let Some(center) = scene.rooms.get(room).map(|room| room.center) {
+                self.camera_focus_target = self.camera_target_for(center);
+                self.last_camera_input = Some(Instant::now());
+                self.final_frame_pending = true;
+            }
         }
+    }
+
+    fn camera_target_for(&self, room_center: glam::Vec2) -> glam::Vec2 {
+        let manual_offset = glam::Vec2::new(
+            (self.camera_yaw - 0.35) * 0.055,
+            (self.camera_pitch - 0.22) * 0.08,
+        );
+        room_center + manual_offset / self.camera_zoom.max(0.01)
+    }
+
+    fn animate_camera_focus(&mut self) -> bool {
+        let delta = self.camera_focus_target - self.camera_focus;
+        if delta.length_squared() < 0.000_001 {
+            if self.camera_focus != self.camera_focus_target {
+                self.camera_focus = self.camera_focus_target;
+                self.scene_dirty = true;
+                return true;
+            }
+            return false;
+        }
+        self.camera_focus += delta * 0.22;
+        self.scene_dirty = true;
+        self.last_camera_input = Some(Instant::now());
+        true
     }
 
     fn cycle_option(&mut self, action: OptionAction) {
@@ -361,6 +402,8 @@ impl Dashboard {
                     self.camera_yaw = 0.35;
                     self.camera_pitch = 0.22;
                     self.camera_zoom = 1.0;
+                    self.camera_focus = glam::Vec2::splat(0.5);
+                    self.camera_focus_target = glam::Vec2::splat(0.5);
                     self.scene_dirty = true;
                     self.last_camera_input = Some(Instant::now());
                 }
@@ -542,6 +585,9 @@ pub fn run(
                 dashboard.scene_dirty = true;
                 dashboard.scene_refresh_pending = false;
             }
+            ui_dirty = true;
+        }
+        if dashboard.animate_camera_focus() {
             ui_dirty = true;
         }
         if (dashboard.refresh_requested

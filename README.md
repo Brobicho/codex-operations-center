@@ -81,7 +81,8 @@ codex-ops --graphics safe
 - `codex app-server` is used to list stored local threads through its documented JSON-RPC API.
 - Global Codex lifecycle hooks provide live events for every trusted local project.
 - When a Codex surface does not emit hooks, a schema-tolerant, read-only adapter observes the local rollout tail and open process handles.
-- That adapter retains event metadata only; prompt text, assistant messages, command arguments, tool outputs, and reasoning contents are never copied into the Operations Center event store. The live agent inspector reads only declared reasoning effort and token counts.
+- The local adapter reads exact shell commands and working directories transiently for the live room inspector. It ignores prompt text, assistant messages, tool outputs, and reasoning contents, and does not persist a second copy of rollout commands.
+- Lifecycle hook records retain command details when Codex supplies them so activity rows can be inspected later; this local event store never leaves the machine.
 - Cloud and other-machine sessions require separate collectors and are not presented as locally observed activity.
 - Captured lifecycle events stay on the local machine; the project includes no telemetry.
 
@@ -103,7 +104,7 @@ The integration writes its state and persistent `config.json` beneath `~/.local/
 
 | Input | Action |
 | --- | --- |
-| Arrow keys | Move room focus spatially through the connected complex |
+| Arrow keys | Move room focus spatially and recenter the camera on it |
 | Click an agent or conversation | Open its live agent sheet and select the corresponding Codex thread |
 | Click the Options room | Configure graphics, refresh pace, resting agents, and journal density |
 | Click an activity | Open its exact timestamp, command, tool, and changed-file details |

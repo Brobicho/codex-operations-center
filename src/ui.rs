@@ -58,7 +58,8 @@ pub fn draw(frame: &mut Frame<'_>, dashboard: &mut Dashboard) {
             Layout::vertical([Constraint::Percentage(64), Constraint::Percentage(36)])
                 .split(body[2])
         } else {
-            Layout::vertical([Constraint::Length(7), Constraint::Min(8)]).split(body[2])
+            Layout::vertical([Constraint::Percentage(44), Constraint::Percentage(56)])
+                .split(body[2])
         };
         draw_inspector(frame, dashboard, right[0]);
         draw_events(frame, dashboard, right[1]);
@@ -179,7 +180,7 @@ fn draw_inspector(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) 
     let block = panel(if dashboard.agent_detail_open {
         "FICHE AGENT"
     } else {
-        "FOCUS"
+        "DÉTAIL DE LA ROOM"
     });
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -199,8 +200,67 @@ fn draw_inspector(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) 
         .or(thread.name.as_deref())
         .filter(|value| !value.is_empty())
         .unwrap_or("Agent Codex");
+    let belongs_to_thread = |event: &&crate::events::EventRecord| {
+        event.session_id == thread.session_id || event.session_id == thread.id
+    };
+    let latest_event = dashboard.events.iter().rev().find(belongs_to_thread);
+    let latest_command_event = dashboard
+        .events
+        .iter()
+        .rev()
+        .filter(belongs_to_thread)
+        .find(|event| event.command_detail().is_some());
+    let current_action = thread
+        .runtime
+        .last_action
+        .clone()
+        .or_else(|| latest_event.map(|event| event.summary.clone()))
+        .unwrap_or_else(|| "En attente d’une nouvelle tâche".to_owned());
+    let runtime_command = thread.runtime.last_command.as_deref();
+    let exact_command =
+        runtime_command.or_else(|| latest_command_event.and_then(|event| event.command_detail()));
+    let command_workdir = thread
+        .runtime
+        .last_command_workdir
+        .as_deref()
+        .or_else(|| latest_command_event.and_then(|event| event.working_directory()))
+        .unwrap_or(&thread.cwd);
+    let command_tool = if runtime_command.is_some() {
+        thread.runtime.last_tool.as_deref()
+    } else {
+        latest_command_event.and_then(|event| event.tool_name.as_deref())
+    };
+    let activity_time = thread
+        .runtime
+        .last_action_at
+        .and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0))
+        .map(|date| date.with_timezone(&Local).format("%H:%M:%S").to_string())
+        .or_else(|| {
+            latest_event.map(|event| {
+                event
+                    .received_at
+                    .with_timezone(&Local)
+                    .format("%H:%M:%S")
+                    .to_string()
+            })
+        });
+    let command_time = if runtime_command.is_some() {
+        thread
+            .runtime
+            .last_action_at
+            .and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0))
+            .map(|date| date.with_timezone(&Local).format("%H:%M:%S").to_string())
+    } else {
+        latest_command_event.map(|event| {
+            event
+                .received_at
+                .with_timezone(&Local)
+                .format("%H:%M:%S")
+                .to_string()
+        })
+    };
     if !dashboard.agent_detail_open {
-        let content = vec![
+        let mut content = vec![
             Line::from(vec![
                 Span::styled(" ◆ ", Style::new().fg(status_color(thread))),
                 Span::styled(
@@ -216,12 +276,52 @@ fn draw_inspector(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) 
                 Span::styled("  ·  ", Style::new().fg(MUTED)),
                 Span::styled(project_name(&thread.cwd), Style::new().fg(CYAN)),
             ]),
+            section_colored("ACTIVITÉ COURANTE", GREEN),
+            Line::from(Span::styled(&current_action, Style::new().fg(Color::White))),
+            Line::from(vec![
+                Span::styled(
+                    activity_time.as_deref().unwrap_or("heure inconnue"),
+                    Style::new().fg(CYAN),
+                ),
+                Span::styled(
+                    thread
+                        .runtime
+                        .last_tool
+                        .as_deref()
+                        .or_else(|| latest_event.and_then(|event| event.tool_name.as_deref()))
+                        .map(|tool| format!("  ·  {tool}"))
+                        .unwrap_or_default(),
+                    Style::new().fg(MAGENTA),
+                ),
+            ]),
+        ];
+        if let Some(command) = exact_command {
+            content.push(Line::from(vec![
+                Span::styled("\nDERNIÈRE COMMANDE", Style::new().fg(AMBER).bold()),
+                Span::styled(
+                    command_time
+                        .as_deref()
+                        .map(|time| format!("  ·  {time}"))
+                        .unwrap_or_default(),
+                    Style::new().fg(MUTED),
+                ),
+            ]));
+            content.push(Line::from(Span::styled(
+                command,
+                Style::new().fg(Color::Rgb(255, 218, 132)),
+            )));
+            content.push(Line::from(vec![
+                Span::styled("dans  ", Style::new().fg(MUTED)),
+                Span::styled(command_workdir, Style::new().fg(CYAN)),
+            ]));
+        }
+        content.extend([
             Line::default(),
             Line::from(Span::styled(
-                "Cliquez sur l’agent pour ouvrir ses métriques.",
+                "Cliquez sur l’agent pour toutes les métriques.",
                 Style::new().fg(MUTED),
             )),
-        ];
+        ]);
         frame.render_widget(
             Paragraph::new(content)
                 .style(Style::new().bg(PANEL))
@@ -248,21 +348,6 @@ fn draw_inspector(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) 
             )
         })
     });
-    let current_action = thread
-        .runtime
-        .last_action
-        .clone()
-        .or_else(|| {
-            dashboard
-                .events
-                .iter()
-                .rev()
-                .find(|event| {
-                    event.session_id == thread.session_id || event.session_id == thread.id
-                })
-                .map(|event| event.summary.clone())
-        })
-        .unwrap_or_else(|| "En attente d’une nouvelle tâche".to_owned());
     let model = thread
         .runtime
         .model
@@ -295,15 +380,37 @@ fn draw_inspector(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) 
         )),
         Line::default(),
         section_colored("ACTION EN COURS", GREEN),
-        Line::from(Span::styled(
-            truncate(&current_action, inner.width as usize * 3),
-            Style::new().fg(Color::White),
-        )),
+        Line::from(Span::styled(&current_action, Style::new().fg(Color::White))),
         section_colored("DÉBUT D’ACTIVITÉ", AMBER),
         Line::from(Span::styled(
             started.unwrap_or_else(|| "Au repos".to_owned()),
             Style::new().fg(AMBER),
         )),
+    ];
+    if let Some(command) = exact_command {
+        content.push(section_colored("DERNIÈRE COMMANDE EXACTE", AMBER));
+        content.push(Line::from(vec![
+            Span::styled(
+                command_time.as_deref().unwrap_or("heure inconnue"),
+                Style::new().fg(CYAN).bold(),
+            ),
+            Span::styled(
+                command_tool
+                    .map(|tool| format!("  ·  {tool}"))
+                    .unwrap_or_default(),
+                Style::new().fg(MAGENTA),
+            ),
+        ]));
+        content.push(Line::from(Span::styled(
+            command,
+            Style::new().fg(Color::Rgb(255, 218, 132)),
+        )));
+        content.push(Line::from(vec![
+            Span::styled("Dossier  ", Style::new().fg(MUTED)),
+            Span::styled(command_workdir, Style::new().fg(CYAN)),
+        ]));
+    }
+    content.extend([
         section_colored("RAISONNEMENT CODEX", VIOLET),
         Line::from(vec![
             Span::styled(reasoning.to_uppercase(), Style::new().fg(VIOLET).bold()),
@@ -345,7 +452,7 @@ fn draw_inspector(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) 
             truncate(&thread.cwd, inner.width as usize),
             Style::new().fg(Color::Rgb(104, 144, 194)),
         )),
-    ];
+    ]);
     if let Some(duration) = thread.runtime.last_turn_duration_ms {
         content.push(section("DERNIER TOUR"));
         content.push(Line::from(vec![
@@ -1024,6 +1131,8 @@ mod tests {
             camera_yaw: 0.3,
             camera_pitch: 0.2,
             camera_zoom: 1.0,
+            camera_focus: glam::Vec2::splat(0.5),
+            camera_focus_target: glam::Vec2::splat(0.5),
             started_at: Instant::now(),
             last_refresh: Instant::now(),
             scene_area: Rect::default(),
@@ -1055,6 +1164,11 @@ mod tests {
         };
         let backend = TestBackend::new(180, 52);
         let mut terminal = Terminal::new(backend).unwrap();
+        dashboard.threads[0].runtime.last_action = Some("Exécute les tests".to_owned());
+        dashboard.threads[0].runtime.last_command = Some("cargo test --all-features".to_owned());
+        dashboard.threads[0].runtime.last_command_workdir = Some("/work/example".to_owned());
+        dashboard.threads[0].runtime.last_tool = Some("exec_command".to_owned());
+        dashboard.threads[0].runtime.last_action_at = Some(1_785_096_002);
         terminal.draw(|frame| draw(frame, &mut dashboard)).unwrap();
 
         let rendered = terminal
@@ -1066,7 +1180,8 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("CODEX"));
         assert!(rendered.contains("PROJETS · CONVERSATIONS"));
-        assert!(rendered.contains("FOCUS"));
+        assert!(rendered.contains("DÉTAIL DE LA ROOM"));
+        assert!(rendered.contains("cargo test --all-features"));
         assert!(rendered.contains("COMPLEXE D’OPÉRATIONS"));
         assert!(rendered.contains("Example operation"));
         assert!(!dashboard.scene_area.is_empty());
