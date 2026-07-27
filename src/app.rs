@@ -18,7 +18,9 @@ use ratatui::backend::CrosstermBackend;
 
 use crate::capabilities::{Capabilities, RenderingProfile};
 use crate::codex::{self, ThreadSummary};
+use crate::config::{GraphicsChoice, OptionAction, UserSettings};
 use crate::events::{self, EventRecord};
+use crate::scene::{RoomTarget, Scene};
 use crate::{kitty, ui};
 
 const MIN_CAMERA_ZOOM: f32 = 0.65;
@@ -60,10 +62,14 @@ pub struct Dashboard {
     pub agent_detail_open: bool,
     pub mouse_position: Option<(u16, u16)>,
     pub pointer_shape: &'static str,
+    pub settings: UserSettings,
+    pub focused_room: usize,
+    pub options_open: bool,
+    pub option_hitboxes: Vec<(OptionAction, ratatui::layout::Rect)>,
 }
 
 impl Dashboard {
-    fn new(capabilities: Capabilities, profile: RenderingProfile) -> Self {
+    fn new(capabilities: Capabilities, profile: RenderingProfile, settings: UserSettings) -> Self {
         let threads = codex::list_threads(250).unwrap_or_default();
         let events = events::recent_for_threads(&threads, 500).unwrap_or_default();
         Self {
@@ -99,6 +105,75 @@ impl Dashboard {
             agent_detail_open: false,
             mouse_position: None,
             pointer_shape: "default",
+            settings,
+            focused_room: 0,
+            options_open: false,
+            option_hitboxes: Vec::new(),
+        }
+    }
+
+    pub fn scene(&self) -> Scene {
+        Scene::from_threads_with_options(
+            &self.effective_threads(),
+            self.camera_yaw,
+            self.camera_pitch,
+            self.camera_zoom,
+            self.started_at.elapsed().as_secs_f32(),
+            self.selected,
+            self.focused_room,
+            self.settings.show_resting_agents,
+        )
+    }
+
+    fn activate_room(&mut self, room_index: usize) {
+        let scene = self.scene();
+        self.focused_room = room_index.min(scene.rooms.len().saturating_sub(1));
+        match scene.room_target(self.focused_room) {
+            Some(RoomTarget::Thread(index)) => {
+                self.selected = index;
+                self.options_open = false;
+            }
+            Some(RoomTarget::Options) => {
+                self.options_open = true;
+                self.agent_detail_open = false;
+            }
+            None => {}
+        }
+        self.selected_event = None;
+        self.scene_dirty = true;
+    }
+
+    fn move_room_focus(&mut self, direction: glam::Vec2) {
+        let scene = self.scene();
+        let next = scene.next_room(self.focused_room, direction);
+        self.activate_room(next);
+    }
+
+    fn sync_room_to_thread(&mut self) {
+        if let Some(room) = self.scene().room_for_thread(self.selected) {
+            self.focused_room = room;
+            self.options_open = false;
+        }
+    }
+
+    fn cycle_option(&mut self, action: OptionAction) {
+        let previous_profile = self.profile;
+        self.settings.cycle(action);
+        self.profile = self.capabilities.select(match self.settings.graphics {
+            GraphicsChoice::Auto => crate::GraphicsMode::Auto,
+            GraphicsChoice::Ultra => crate::GraphicsMode::Ultra,
+            GraphicsChoice::Unicode => crate::GraphicsMode::Unicode,
+            GraphicsChoice::Safe => crate::GraphicsMode::Safe,
+        });
+        self.status_message = self
+            .settings
+            .save()
+            .err()
+            .map(|error| format!("Options non enregistrées : {error}"));
+        self.scene_dirty = true;
+        self.final_frame_pending = true;
+        if previous_profile == RenderingProfile::Ultra && self.profile != RenderingProfile::Ultra {
+            let _ = kitty::delete_scene();
         }
     }
 
@@ -220,26 +295,54 @@ impl Dashboard {
                         self.selected_event = None;
                     } else if self.agent_detail_open {
                         self.agent_detail_open = false;
+                    } else if self.options_open {
+                        self.options_open = false;
                     } else {
                         self.should_quit = true;
                     }
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
+                KeyCode::Char('j') => {
                     if !self.threads.is_empty() {
                         self.selected = (self.selected + 1).min(self.threads.len() - 1);
+                        self.sync_room_to_thread();
                         self.scene_dirty = true;
                     }
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
+                KeyCode::Char('k') => {
                     self.selected = self.selected.saturating_sub(1);
+                    self.sync_room_to_thread();
                     self.scene_dirty = true;
                 }
-                KeyCode::Left | KeyCode::Char('h') => {
+                KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     self.camera_yaw -= 0.12;
                     self.scene_dirty = true;
                     self.last_camera_input = Some(Instant::now());
                 }
-                KeyCode::Right | KeyCode::Char('l') => {
+                KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.camera_yaw += 0.12;
+                    self.scene_dirty = true;
+                    self.last_camera_input = Some(Instant::now());
+                }
+                KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.camera_pitch = (self.camera_pitch - 0.08).max(-0.15);
+                    self.scene_dirty = true;
+                    self.last_camera_input = Some(Instant::now());
+                }
+                KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.camera_pitch = (self.camera_pitch + 0.08).min(0.65);
+                    self.scene_dirty = true;
+                    self.last_camera_input = Some(Instant::now());
+                }
+                KeyCode::Left => self.move_room_focus(glam::Vec2::NEG_X),
+                KeyCode::Right => self.move_room_focus(glam::Vec2::X),
+                KeyCode::Up => self.move_room_focus(glam::Vec2::NEG_Y),
+                KeyCode::Down => self.move_room_focus(glam::Vec2::Y),
+                KeyCode::Char('h') => {
+                    self.camera_yaw -= 0.12;
+                    self.scene_dirty = true;
+                    self.last_camera_input = Some(Instant::now());
+                }
+                KeyCode::Char('l') => {
                     self.camera_yaw += 0.12;
                     self.scene_dirty = true;
                     self.last_camera_input = Some(Instant::now());
@@ -285,6 +388,10 @@ impl Dashboard {
                     }
                     MouseEventKind::Down(MouseButton::Left) => {
                         let point = (mouse.column, mouse.row).into();
+                        if let Some(action) = ui::option_at(self, mouse.column, mouse.row) {
+                            self.cycle_option(action);
+                            return;
+                        }
                         if let Some(index) = ui::event_at(self, mouse.column, mouse.row) {
                             self.selected_event = Some(index);
                             self.agent_detail_open = false;
@@ -306,6 +413,14 @@ impl Dashboard {
                             }
                             self.selected_event = None;
                             self.agent_detail_open = true;
+                            self.sync_room_to_thread();
+                            return;
+                        }
+                        if let Some(room) = ui::room_at(self, mouse.column, mouse.row) {
+                            self.activate_room(room);
+                            if self.options_open {
+                                return;
+                            }
                         }
                         if !self.scene_area.contains(point) {
                             return;
@@ -347,6 +462,8 @@ impl Dashboard {
             "grabbing"
         } else if ui::event_at(self, column, row).is_some()
             || (self.thread_area.contains(point) && ui::thread_at(self, column, row).is_some())
+            || ui::room_at(self, column, row).is_some()
+            || ui::option_at(self, column, row).is_some()
             || self.refresh_button.contains(point)
             || self.quit_button.contains(point)
         {
@@ -366,7 +483,11 @@ impl Dashboard {
     }
 }
 
-pub fn run(capabilities: Capabilities, profile: RenderingProfile) -> Result<()> {
+pub fn run(
+    capabilities: Capabilities,
+    profile: RenderingProfile,
+    settings: UserSettings,
+) -> Result<()> {
     // This is an interactive visual application: an inherited NO_COLOR from a
     // parent agent shell must not silently erase the dashboard palette.
     crossterm::style::force_color_output(true);
@@ -377,7 +498,7 @@ pub fn run(capabilities: Capabilities, profile: RenderingProfile) -> Result<()> 
     }
 
     let mut guard = TerminalGuard::enter()?;
-    let mut dashboard = Dashboard::new(capabilities, profile);
+    let mut dashboard = Dashboard::new(capabilities, profile, settings);
     let tick_rate = Duration::from_millis(16);
     let mut ui_dirty = true;
     let mut last_ui_frame = Instant::now() - Duration::from_secs(1);
@@ -400,9 +521,7 @@ pub fn run(capabilities: Capabilities, profile: RenderingProfile) -> Result<()> 
                             | MouseEventKind::Up(_),
                         ..
                     }) | Event::Key(crossterm::event::KeyEvent {
-                        code: KeyCode::Left
-                            | KeyCode::Right
-                            | KeyCode::Char('h' | 'l' | '+' | '=' | '-' | '0'),
+                        code: KeyCode::Char('h' | 'l' | '+' | '=' | '-' | '0'),
                         ..
                     })
                 );
@@ -426,7 +545,8 @@ pub fn run(capabilities: Capabilities, profile: RenderingProfile) -> Result<()> 
             ui_dirty = true;
         }
         if (dashboard.refresh_requested
-            || dashboard.last_refresh.elapsed() >= Duration::from_secs(5))
+            || dashboard.last_refresh.elapsed()
+                >= Duration::from_secs(dashboard.settings.refresh.seconds()))
             && !refresh_in_flight
         {
             dashboard.refresh_requested = false;

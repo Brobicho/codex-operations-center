@@ -40,7 +40,8 @@ pub struct SceneRoom {
     pub half_width: f32,
     pub half_height: f32,
     pub color: Vec3,
-    pub infrastructure: bool,
+    pub options: bool,
+    pub thread_indices: Vec<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -52,6 +53,13 @@ pub struct Scene {
     pub zoom: f32,
     pub time: f32,
     pub selected: usize,
+    pub focused_room: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RoomTarget {
+    Thread(usize),
+    Options,
 }
 
 impl Scene {
@@ -62,6 +70,20 @@ impl Scene {
         zoom: f32,
         time: f32,
         selected: usize,
+    ) -> Self {
+        Self::from_threads_with_options(threads, yaw, pitch, zoom, time, selected, 0, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_threads_with_options(
+        threads: &[ThreadSummary],
+        yaw: f32,
+        pitch: f32,
+        zoom: f32,
+        time: f32,
+        selected: usize,
+        focused_room: usize,
+        show_resting_agents: bool,
     ) -> Self {
         let mut projects = Vec::<(String, Vec<(usize, &ThreadSummary)>)>::new();
         for (index, thread) in threads.iter().enumerate() {
@@ -94,17 +116,27 @@ impl Scene {
             visible.into_iter().zip(room_layout).enumerate()
         {
             let color = PALETTE[stable_byte(&cwd, 1) as usize % PALETTE.len()];
+            let thread_indices = project_threads
+                .iter()
+                .map(|(index, _)| *index)
+                .collect::<Vec<_>>();
             rooms.push(SceneRoom {
                 label: project_name(&cwd),
                 center: layout.0,
                 half_width: layout.1,
                 half_height: layout.2,
                 color,
-                infrastructure: false,
+                options: false,
+                thread_indices,
             });
 
             let slots = agent_slots(project_threads.len().min(3));
-            for ((thread_index, thread), slot) in project_threads.into_iter().take(3).zip(slots) {
+            for ((thread_index, thread), slot) in project_threads
+                .into_iter()
+                .filter(|(_, thread)| show_resting_agents || is_operational(thread))
+                .take(3)
+                .zip(slots)
+            {
                 let active = matches!(
                     thread.status,
                     ThreadStatus::Active { .. } | ThreadStatus::ObservedRunning
@@ -158,14 +190,16 @@ impl Scene {
             }
         }
         rooms.push(SceneRoom {
-            label: "INFRASTRUCTURE".to_owned(),
+            label: "OPTIONS".to_owned(),
             center: Vec2::new(0.50, 0.84),
-            half_width: 0.16,
-            half_height: 0.105,
-            color: Vec3::new(0.08, 0.86, 0.84),
-            infrastructure: true,
+            half_width: 0.145,
+            half_height: 0.095,
+            color: Vec3::new(1.00, 0.62, 0.20),
+            options: true,
+            thread_indices: Vec::new(),
         });
 
+        let focused_room = focused_room.min(rooms.len().saturating_sub(1));
         Self {
             nodes,
             rooms,
@@ -174,6 +208,7 @@ impl Scene {
             zoom,
             time,
             selected,
+            focused_room,
         }
     }
 
@@ -196,10 +231,10 @@ impl Scene {
             return canvas.pixels;
         }
 
+        self.draw_corridors(&mut canvas);
         for room in &self.rooms {
             self.draw_room(&mut canvas, room);
         }
-        self.draw_infrastructure(&mut canvas);
 
         let mut nodes = self.nodes.iter().collect::<Vec<_>>();
         nodes.sort_by(|left, right| left.position.y.total_cmp(&right.position.y));
@@ -229,6 +264,58 @@ impl Scene {
             .collect()
     }
 
+    pub fn room_at(&self, width: f32, height: f32, x: f32, y: f32) -> Option<usize> {
+        self.rooms
+            .iter()
+            .enumerate()
+            .filter_map(|(index, room)| {
+                let center = self.view_point(room.center) * Vec2::new(width, height);
+                let distance = center.distance(Vec2::new(x, y));
+                let radius = room.half_width * width * self.zoom * 0.9;
+                (distance <= radius.max(4.0)).then_some((index, distance))
+            })
+            .min_by(|left, right| left.1.total_cmp(&right.1))
+            .map(|(index, _)| index)
+    }
+
+    pub fn room_for_thread(&self, thread_index: usize) -> Option<usize> {
+        self.rooms
+            .iter()
+            .position(|room| room.thread_indices.contains(&thread_index))
+    }
+
+    pub fn room_target(&self, room_index: usize) -> Option<RoomTarget> {
+        let room = self.rooms.get(room_index)?;
+        if room.options {
+            Some(RoomTarget::Options)
+        } else {
+            room.thread_indices.first().copied().map(RoomTarget::Thread)
+        }
+    }
+
+    pub fn next_room(&self, current: usize, direction: Vec2) -> usize {
+        let Some(origin) = self.rooms.get(current).map(|room| room.center) else {
+            return 0;
+        };
+        let direction = direction.normalize_or_zero();
+        self.rooms
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != current)
+            .filter_map(|(index, room)| {
+                let delta = room.center - origin;
+                let forward = delta.dot(direction);
+                if forward <= 0.025 {
+                    return None;
+                }
+                let side = (delta - direction * forward).length();
+                Some((index, forward + side * 2.2))
+            })
+            .min_by(|left, right| left.1.total_cmp(&right.1))
+            .map(|(index, _)| index)
+            .unwrap_or(current)
+    }
+
     fn draw_room(&self, canvas: &mut Canvas, room: &SceneRoom) {
         let center = canvas.point(self.view_point(room.center));
         let half_w = room.half_width * canvas.width as f32 * self.zoom.min(1.35);
@@ -242,12 +329,26 @@ impl Scene {
 
         if canvas.width >= 320 {
             canvas.sprite(
-                project_room_sprite(),
+                if room.options {
+                    options_room_sprite()
+                } else {
+                    project_room_sprite()
+                },
                 center + Vec2::Y * half_h * 1.08,
                 half_w * 1.72,
             );
             canvas.glow_line(left, front, room.color, 2);
             canvas.glow_line(front, right, room.color, 2);
+            if self
+                .rooms
+                .get(self.focused_room)
+                .is_some_and(|focused| std::ptr::eq(focused, room))
+            {
+                canvas.glow_line(left, back, Vec3::new(1.0, 0.72, 0.22), 3);
+                canvas.glow_line(back, right, Vec3::new(1.0, 0.72, 0.22), 3);
+                canvas.glow_line(right, front, Vec3::new(1.0, 0.72, 0.22), 3);
+                canvas.glow_line(front, left, Vec3::new(1.0, 0.72, 0.22), 3);
+            }
             return;
         }
 
@@ -452,37 +553,54 @@ impl Scene {
         }
     }
 
-    fn draw_infrastructure(&self, canvas: &mut Canvas) {
-        let Some(room) = self.rooms.iter().find(|room| room.infrastructure) else {
-            return;
-        };
-        let center = canvas.point(self.view_point(room.center));
-        let scale = (canvas.width.min(canvas.height * 2) as f32 / 210.0)
-            .clamp(canvas.logical(0.4), canvas.logical(3.0));
-        if canvas.width >= 320 {
-            canvas.sprite(
-                server_cluster_sprite(),
-                center + Vec2::Y * 24.0 * scale,
-                (canvas.width as f32 * 0.115).clamp(canvas.logical(76.0), canvas.logical(190.0)),
-            );
+    fn draw_corridors(&self, canvas: &mut Canvas) {
+        if self.rooms.len() < 2 {
             return;
         }
-        for rack in -1..=1 {
-            let position = center + Vec2::new(rack as f32 * 13.0 * scale, 0.0);
-            canvas.iso_box(
-                position,
-                8.0 * scale,
-                4.0 * scale,
-                15.0 * scale,
-                Vec3::new(0.055, 0.09, 0.14),
-            );
-            for light in 0..4 {
-                canvas.glow_circle(
-                    position + Vec2::new(-2.0, -11.0 + light as f32 * 3.0) * scale,
-                    0.8 * scale,
-                    Vec3::new(0.08, 0.88, 0.82),
-                );
+        let mut connected = vec![0usize];
+        while connected.len() < self.rooms.len() {
+            let mut edge: Option<(usize, usize, f32)> = None;
+            for &from in &connected {
+                for to in 0..self.rooms.len() {
+                    if connected.contains(&to) {
+                        continue;
+                    }
+                    let distance = self.rooms[from].center.distance(self.rooms[to].center);
+                    if edge.is_none_or(|best| distance < best.2) {
+                        edge = Some((from, to, distance));
+                    }
+                }
             }
+            let Some((from, to, _)) = edge else { break };
+            let a = canvas.point(self.view_point(self.rooms[from].center));
+            let b = canvas.point(self.view_point(self.rooms[to].center));
+            let delta = (b - a).normalize_or_zero();
+            let normal = Vec2::new(-delta.y, delta.x);
+            let width =
+                (canvas.width as f32 * 0.014).clamp(canvas.logical(5.0), canvas.logical(18.0));
+            let color = Vec3::new(0.035, 0.11, 0.17);
+            canvas.polygon(
+                &[
+                    a + normal * width,
+                    b + normal * width,
+                    b - normal * width,
+                    a - normal * width,
+                ],
+                color,
+            );
+            canvas.glow_line(
+                a + normal * width,
+                b + normal * width,
+                Vec3::new(0.08, 0.75, 0.82),
+                1,
+            );
+            canvas.glow_line(
+                a - normal * width,
+                b - normal * width,
+                Vec3::new(0.08, 0.75, 0.82),
+                1,
+            );
+            connected.push(to);
         }
     }
 
@@ -1032,12 +1150,12 @@ fn project_room_sprite() -> &'static Sprite {
     })
 }
 
-fn server_cluster_sprite() -> &'static Sprite {
+fn options_room_sprite() -> &'static Sprite {
     static SPRITE: OnceLock<Sprite> = OnceLock::new();
     SPRITE.get_or_init(|| {
         decode_sprite(
-            include_bytes!("../assets/generated/server-cluster.png"),
-            "server cluster",
+            include_bytes!("../assets/generated/options-room-v2.png"),
+            "options room",
         )
     })
 }
@@ -1092,29 +1210,58 @@ fn edge(a: Vec2, b: Vec2, point: Vec2) -> f32 {
 fn room_layout(count: usize) -> Vec<(Vec2, f32, f32)> {
     match count {
         0 => Vec::new(),
-        1 => vec![(Vec2::new(0.50, 0.48), 0.36, 0.27)],
+        1 => vec![(Vec2::new(0.50, 0.30), 0.20, 0.14)],
         2 => vec![
-            (Vec2::new(0.50, 0.30), 0.31, 0.18),
-            (Vec2::new(0.50, 0.66), 0.31, 0.18),
+            (Vec2::new(0.32, 0.30), 0.18, 0.12),
+            (Vec2::new(0.68, 0.30), 0.18, 0.12),
         ],
         3 => vec![
-            (Vec2::new(0.50, 0.24), 0.28, 0.16),
-            (Vec2::new(0.29, 0.58), 0.25, 0.17),
-            (Vec2::new(0.71, 0.58), 0.25, 0.17),
+            (Vec2::new(0.20, 0.28), 0.15, 0.10),
+            (Vec2::new(0.50, 0.28), 0.15, 0.10),
+            (Vec2::new(0.80, 0.28), 0.15, 0.10),
         ],
+        4 => [
+            Vec2::new(0.31, 0.24),
+            Vec2::new(0.69, 0.24),
+            Vec2::new(0.31, 0.53),
+            Vec2::new(0.69, 0.53),
+        ]
+        .into_iter()
+        .map(|center| (center, 0.17, 0.105))
+        .collect(),
+        5 => [
+            Vec2::new(0.20, 0.22),
+            Vec2::new(0.50, 0.22),
+            Vec2::new(0.80, 0.22),
+            Vec2::new(0.34, 0.52),
+            Vec2::new(0.66, 0.52),
+        ]
+        .into_iter()
+        .map(|center| (center, 0.145, 0.095))
+        .collect(),
         _ => [
             Vec2::new(0.19, 0.20),
             Vec2::new(0.50, 0.20),
             Vec2::new(0.81, 0.20),
-            Vec2::new(0.19, 0.52),
-            Vec2::new(0.50, 0.52),
-            Vec2::new(0.81, 0.52),
+            Vec2::new(0.19, 0.50),
+            Vec2::new(0.50, 0.50),
+            Vec2::new(0.81, 0.50),
         ]
         .into_iter()
         .take(count.min(6))
-        .map(|center| (center, 0.16, 0.105))
+        .map(|center| (center, 0.14, 0.09))
         .collect(),
     }
+}
+
+fn is_operational(thread: &ThreadSummary) -> bool {
+    matches!(
+        thread.status,
+        ThreadStatus::Active { .. }
+            | ThreadStatus::ObservedRunning
+            | ThreadStatus::NeedsAttention
+            | ThreadStatus::SystemError
+    )
 }
 
 fn agent_slots(count: usize) -> Vec<Vec2> {
@@ -1197,9 +1344,32 @@ mod tests {
             zoom: 1.0,
             time: 0.0,
             selected: 0,
+            focused_room: 0,
         };
         let pixels = scene.render_rgba(32, 20);
         assert_eq!(pixels.len(), 32 * 20 * 4);
         assert!(pixels.chunks_exact(4).all(|pixel| pixel[3] == 255));
+    }
+
+    #[test]
+    fn spatial_navigation_reaches_the_options_room() {
+        let scene = Scene::from_threads(&[], 0.35, 0.22, 1.0, 0.0, 0);
+        assert_eq!(scene.room_target(0), Some(RoomTarget::Options));
+
+        let mut scene = scene;
+        scene.rooms.insert(
+            0,
+            SceneRoom {
+                label: "PROJECT".to_owned(),
+                center: Vec2::new(0.5, 0.25),
+                half_width: 0.15,
+                half_height: 0.10,
+                color: PALETTE[0],
+                options: false,
+                thread_indices: vec![3],
+            },
+        );
+        assert_eq!(scene.next_room(0, Vec2::Y), 1);
+        assert_eq!(scene.room_target(1), Some(RoomTarget::Options));
     }
 }

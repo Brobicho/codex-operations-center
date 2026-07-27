@@ -22,6 +22,10 @@ pub fn events_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("events.jsonl"))
 }
 
+pub fn config_path() -> Result<PathBuf> {
+    Ok(data_dir()?.join("config.json"))
+}
+
 pub fn hd_terminal_dir() -> Result<PathBuf> {
     Ok(data_dir()?.join("kitty.app"))
 }

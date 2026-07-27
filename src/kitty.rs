@@ -24,15 +24,7 @@ pub fn draw_scene(dashboard: &Dashboard, preview: bool) -> Result<()> {
     if width == 0 || height == 0 {
         return Ok(());
     }
-    let threads = dashboard.effective_threads();
-    let scene = Scene::from_threads(
-        &threads,
-        dashboard.camera_yaw,
-        dashboard.camera_pitch,
-        dashboard.camera_zoom,
-        dashboard.started_at.elapsed().as_secs_f32(),
-        dashboard.selected,
-    );
+    let scene = dashboard.scene();
     let (max_width, max_height) = if preview {
         (MAX_PREVIEW_WIDTH, MAX_PREVIEW_HEIGHT)
     } else {
