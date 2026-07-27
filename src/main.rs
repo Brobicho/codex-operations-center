@@ -1,6 +1,7 @@
 mod app;
 mod capabilities;
 mod codex;
+mod config;
 mod events;
 mod hooks;
 mod kitty;
@@ -85,12 +86,23 @@ fn main() -> Result<()> {
 }
 
 fn run_dashboard(graphics: GraphicsMode) -> Result<()> {
+    let settings = config::UserSettings::load().unwrap_or_default();
+    let graphics = if graphics == GraphicsMode::Auto {
+        match settings.graphics {
+            config::GraphicsChoice::Auto => GraphicsMode::Auto,
+            config::GraphicsChoice::Ultra => GraphicsMode::Ultra,
+            config::GraphicsChoice::Unicode => GraphicsMode::Unicode,
+            config::GraphicsChoice::Safe => GraphicsMode::Safe,
+        }
+    } else {
+        graphics
+    };
     let capabilities = capabilities::Capabilities::detect();
     if should_launch_hd_terminal(graphics, &capabilities) && launch_hd_terminal()? {
         return Ok(());
     }
     let selected = capabilities.select(graphics);
-    app::run(capabilities, selected)
+    app::run(capabilities, selected, settings)
 }
 
 fn should_launch_hd_terminal(

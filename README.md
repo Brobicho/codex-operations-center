@@ -97,18 +97,20 @@ codex-ops uninstall        # remove only the owned integration and application
 codex-ops uninstall --purge
 ```
 
-The integration writes its state beneath `~/.local/share/codex-ops` on Linux and adds one handler per supported event to `~/.codex/hooks.json`. Existing hooks are preserved. No files are added to individual repositories and no system service or root permission is required.
+The integration writes its state and persistent `config.json` beneath `~/.local/share/codex-ops` on Linux and adds one handler per supported event to `~/.codex/hooks.json`. Existing hooks are preserved. No files are added to individual repositories and no system service or root permission is required.
 
 ## Controls
 
 | Input | Action |
 | --- | --- |
+| Arrow keys | Move room focus spatially through the connected complex |
 | Click an agent or conversation | Open its live agent sheet and select the corresponding Codex thread |
+| Click the Options room | Configure graphics, refresh pace, resting agents, and journal density |
 | Click an activity | Open its exact timestamp, command, tool, and changed-file details |
-| Drag the scene or use Left/Right | Move the view |
+| Drag the scene or use Shift+arrow keys | Move the camera |
 | Ctrl+mouse wheel or `+`/`-` | Zoom without reacting to launch-time scroll events |
 | `0` | Recenter the camera and reset zoom |
-| Up/Down or `j`/`k` | Move through sessions |
+| `j`/`k` | Move through conversations |
 | `r` | Refresh immediately |
 | `q`, Escape, or Ctrl-C | Quit and restore the terminal |
 

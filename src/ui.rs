@@ -8,7 +8,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use crate::app::Dashboard;
 use crate::capabilities::RenderingProfile;
 use crate::codex::{ThreadStatus, ThreadSummary};
-use crate::scene::{Scene, UnicodeScene, project_key, project_name};
+use crate::config::{GraphicsChoice, JournalDensity, OptionAction, RefreshPace};
+use crate::scene::{UnicodeScene, project_key, project_name};
 
 const BG: Color = Color::Rgb(3, 8, 22);
 const PANEL: Color = Color::Rgb(7, 18, 39);
@@ -50,7 +51,10 @@ pub fn draw(frame: &mut Frame<'_>, dashboard: &mut Dashboard) {
         .split(vertical[1]);
         draw_threads(frame, dashboard, body[0]);
         draw_scene(frame, dashboard, body[1]);
-        let right = if dashboard.selected_event.is_some() || dashboard.agent_detail_open {
+        let right = if dashboard.selected_event.is_some()
+            || dashboard.agent_detail_open
+            || dashboard.options_open
+        {
             Layout::vertical([Constraint::Percentage(64), Constraint::Percentage(36)])
                 .split(body[2])
         } else {
@@ -129,14 +133,7 @@ fn draw_scene(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
     frame.render_widget(block, area);
     dashboard.scene_area = inner;
     let threads = dashboard.effective_threads();
-    let scene = Scene::from_threads(
-        &threads,
-        dashboard.camera_yaw,
-        dashboard.camera_pitch,
-        dashboard.camera_zoom,
-        dashboard.started_at.elapsed().as_secs_f32(),
-        dashboard.selected,
-    );
+    let scene = dashboard.scene();
     match dashboard.profile {
         RenderingProfile::Ultra => frame.render_widget(Block::new(), inner),
         RenderingProfile::Unicode => frame.render_widget(UnicodeScene { scene: &scene }, inner),
@@ -167,11 +164,16 @@ fn draw_scene(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
     }
 }
 
-fn draw_inspector(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
+fn draw_inspector(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
+    dashboard.option_hitboxes.clear();
     if let Some(index) = dashboard.selected_event
         && let Some(event) = dashboard.events.get(index)
     {
         draw_activity_detail(frame, event, area);
+        return;
+    }
+    if dashboard.options_open {
+        draw_options(frame, dashboard, area);
         return;
     }
     let block = panel(if dashboard.agent_detail_open {
@@ -366,6 +368,94 @@ fn draw_inspector(frame: &mut Frame<'_>, dashboard: &Dashboard, area: Rect) {
     );
 }
 
+fn draw_options(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
+    let block = panel("OPTIONS DU CENTRE").border_style(Style::new().fg(AMBER));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    dashboard.option_hitboxes.clear();
+    let cards = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Min(1),
+    ])
+    .split(inner);
+    let values = [
+        (
+            OptionAction::Graphics,
+            "GRAPHISMES",
+            match dashboard.settings.graphics {
+                GraphicsChoice::Auto => "AUTO",
+                GraphicsChoice::Ultra => "ULTRA 3D",
+                GraphicsChoice::Unicode => "UNICODE",
+                GraphicsChoice::Safe => "COMPATIBLE",
+            },
+            CYAN,
+        ),
+        (
+            OptionAction::Refresh,
+            "ACTUALISATION",
+            match dashboard.settings.refresh {
+                RefreshPace::Fast => "RAPIDE · 2 s",
+                RefreshPace::Balanced => "ÉQUILIBRÉE · 5 s",
+                RefreshPace::Quiet => "CALME · 15 s",
+            },
+            GREEN,
+        ),
+        (
+            OptionAction::RestingAgents,
+            "AGENTS AU REPOS",
+            if dashboard.settings.show_resting_agents {
+                "AFFICHÉS"
+            } else {
+                "MASQUÉS"
+            },
+            VIOLET,
+        ),
+        (
+            OptionAction::JournalDensity,
+            "DENSITÉ DU JOURNAL",
+            match dashboard.settings.journal_density {
+                JournalDensity::Compact => "COMPACT · 8",
+                JournalDensity::Balanced => "ÉQUILIBRÉ · 20",
+                JournalDensity::Full => "COMPLET",
+            },
+            MAGENTA,
+        ),
+    ];
+    for (card, (action, label, value, color)) in cards.iter().zip(values) {
+        dashboard.option_hitboxes.push((action, *card));
+        let hovered = dashboard
+            .mouse_position
+            .is_some_and(|point| card.contains(point.into()));
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(label, Style::new().fg(MUTED).bold())),
+                Line::from(vec![
+                    Span::styled(format!("  {value}"), Style::new().fg(color).bold()),
+                    Span::styled(
+                        "   ↻ changer",
+                        Style::new().fg(if hovered { AMBER } else { MUTED }),
+                    ),
+                ]),
+            ])
+            .style(Style::new().bg(if hovered {
+                Color::Rgb(24, 38, 58)
+            } else {
+                PANEL
+            })),
+            *card,
+        );
+    }
+    frame.render_widget(
+        Paragraph::new("Cliquez sur un réglage pour le faire défiler. Les choix sont enregistrés automatiquement.")
+            .style(Style::new().fg(MUTED))
+            .wrap(Wrap { trim: true }),
+        cards[4],
+    );
+}
+
 fn draw_activity_detail(frame: &mut Frame<'_>, event: &crate::events::EventRecord, area: Rect) {
     let (marker, color) = activity_appearance(event);
     let block = panel("DÉTAIL ACTIVITÉ").border_style(Style::new().fg(color));
@@ -533,7 +623,12 @@ fn draw_events(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
         .events
         .iter()
         .rev()
-        .take(inner.height as usize)
+        .take(
+            dashboard
+                .settings
+                .journal_density
+                .rows(inner.height as usize),
+        )
         .enumerate()
         .map(|(offset, event)| {
             let index = dashboard.events.len() - 1 - offset;
@@ -619,9 +714,9 @@ fn draw_footer(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" CLIC/↑↓ ", Style::new().fg(BG).bg(CYAN).bold()),
-            Span::styled(" Sélection  ", Style::new().fg(MUTED)),
-            Span::styled("GLISSER/←→", Style::new().fg(Color::White)),
+            Span::styled(" FLÈCHES ", Style::new().fg(BG).bg(CYAN).bold()),
+            Span::styled(" Pièces  ", Style::new().fg(MUTED)),
+            Span::styled("GLISSER/MAJ+FLÈCHES", Style::new().fg(Color::White)),
             Span::styled(" Caméra  ", Style::new().fg(MUTED)),
             Span::styled("CTRL+MOLETTE/+−", Style::new().fg(Color::White)),
             Span::styled(" Zoom  ", Style::new().fg(MUTED)),
@@ -686,14 +781,7 @@ fn draw_footer(frame: &mut Frame<'_>, dashboard: &mut Dashboard, area: Rect) {
 pub fn thread_at(dashboard: &Dashboard, column: u16, row: u16) -> Option<usize> {
     let area = dashboard.scene_area;
     if area.contains((column, row).into()) {
-        let scene = Scene::from_threads(
-            &dashboard.effective_threads(),
-            dashboard.camera_yaw,
-            dashboard.camera_pitch,
-            dashboard.camera_zoom,
-            dashboard.started_at.elapsed().as_secs_f32(),
-            dashboard.selected,
-        );
+        let scene = dashboard.scene();
         let local_x = (column - area.x) as f32;
         let local_y = (row - area.y) as f32 * 2.0;
         return scene
@@ -712,11 +800,39 @@ pub fn thread_at(dashboard: &Dashboard, column: u16, row: u16) -> Option<usize> 
         .find_map(|(index, area)| area.contains((column, row).into()).then_some(*index))
 }
 
+pub fn room_at(dashboard: &Dashboard, column: u16, row: u16) -> Option<usize> {
+    let area = dashboard.scene_area;
+    if !area.contains((column, row).into()) {
+        return None;
+    }
+    dashboard.scene().room_at(
+        area.width as f32,
+        area.height as f32 * 2.0,
+        (column - area.x) as f32,
+        (row - area.y) as f32 * 2.0,
+    )
+}
+
+pub fn option_at(dashboard: &Dashboard, column: u16, row: u16) -> Option<OptionAction> {
+    dashboard
+        .option_hitboxes
+        .iter()
+        .find_map(|(action, area)| area.contains((column, row).into()).then_some(*action))
+}
+
 pub fn event_at(dashboard: &Dashboard, column: u16, row: u16) -> Option<usize> {
     if !dashboard.event_area.contains((column, row).into()) {
         return None;
     }
     let offset = (row - dashboard.event_area.y) as usize;
+    if offset
+        >= dashboard
+            .settings
+            .journal_density
+            .rows(dashboard.event_area.height as usize)
+    {
+        return None;
+    }
     dashboard.events.len().checked_sub(offset + 1)
 }
 
@@ -932,6 +1048,10 @@ mod tests {
             agent_detail_open: false,
             mouse_position: None,
             pointer_shape: "default",
+            settings: crate::config::UserSettings::default(),
+            focused_room: 0,
+            options_open: false,
+            option_hitboxes: Vec::new(),
         };
         let backend = TestBackend::new(180, 52);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -965,5 +1085,19 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("FICHE AGENT"));
         assert!(rendered.contains("RAISONNEMENT CODEX"));
+
+        dashboard.agent_detail_open = false;
+        dashboard.options_open = true;
+        terminal.draw(|frame| draw(frame, &mut dashboard)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("OPTIONS DU CENTRE"));
+        assert!(rendered.contains("ACTUALISATION"));
+        assert_eq!(dashboard.option_hitboxes.len(), 4);
     }
 }

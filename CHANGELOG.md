@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0 - 2026-07-27
+
+- Move room focus spatially with the arrow keys while keeping camera movement on drag and Shift+arrow keys.
+- Connect every project room and the control room with visible corridors instead of isolated scene islands.
+- Replace the infrastructure island with a clickable Options room for graphics, refresh pace, resting-agent visibility, and activity-journal density.
+- Persist dashboard settings in the application's owned data directory.
+- Highlight the focused room and expose pointer feedback across rooms and settings.
+
 ## 0.1.9 - 2026-07-27
 
 - Detect an older user-owned `codex-ops` executable that shadows the normal launcher in `PATH`, including previous Cargo installations.
